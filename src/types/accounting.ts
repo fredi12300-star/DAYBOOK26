@@ -348,7 +348,7 @@ export interface SystemAuditLog {
     user_agent: string | null;
 
     // joined fields
-    staff_profile?: StaffMaster;
+    staff_profile?: StaffProfile;
     device?: Device;
 }
 
@@ -364,7 +364,7 @@ export interface FinancialYear {
 }
 
 // Phase 3: Enterprise Identity & Org
-export interface StaffMaster {
+export interface StaffProfile {
     id: string;
     staff_code: string;
     full_name: string;

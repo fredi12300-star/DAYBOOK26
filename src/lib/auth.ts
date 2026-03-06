@@ -37,7 +37,7 @@ export function useAuth() {
             // Fetch User Profile & Staff Info
             const { data: profile, error: profileError } = await supabase
                 .from('user_profiles')
-                .select('*, staff:staff_master(*)')
+                .select('*, staff:staff_profiles(*)')
                 .eq('id', user.id)
                 .maybeSingle();
 
