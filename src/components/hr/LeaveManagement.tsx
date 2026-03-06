@@ -594,7 +594,10 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ initialTab = 'request
                     return (
                         <>
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                {balances.map(bal => (
+                                {balances.filter(b => {
+                                    const status = b.staff?.status as string;
+                                    return status !== 'RELIEVED' && status !== 'ARCHIVED';
+                                }).map(bal => (
                                     <div
                                         key={bal.id}
                                         className="surface-card p-6 border border-slate-800/50 space-y-6 cursor-pointer hover:border-brand-500/40 hover:shadow-lg hover:shadow-brand-500/5 transition-all group"
