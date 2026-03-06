@@ -1,4 +1,3 @@
-import React from 'react';
 import {
     Calendar,
     Clock,
@@ -19,7 +18,7 @@ interface StaffDashboardProps {
 export default function StaffDashboard({
     staff,
     todayAttendance,
-    leaveBalance,
+    leaveBalance: _leaveBalance,
     onNavigate
 }: StaffDashboardProps) {
     const formatTime = (isoString: string | null) => {
@@ -38,7 +37,7 @@ export default function StaffDashboard({
                         {staff?.department || 'Operations'}
                     </span>
                     <span className="px-3 py-1 bg-slate-800 rounded-full text-[10px] font-black uppercase tracking-widest text-slate-400">
-                        {staff?.designation || 'Specialist'}
+                        {staff?.employment_type || 'Specialist'}
                     </span>
                 </div>
             </div>
