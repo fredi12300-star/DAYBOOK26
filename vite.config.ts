@@ -17,7 +17,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           'vendor': ['react', 'react-dom', 'react-router-dom', 'lucide-react', '@supabase/supabase-js'],
-          'excel': ['xlsx', 'exceljs'],
+          'excel': ['xlsx'],
           'pdf': ['jspdf', 'jspdf-autotable'],
           'viz': ['recharts'],
           'utils': ['date-fns', 'papaparse', 'uuid']
