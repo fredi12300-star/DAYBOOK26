@@ -12,11 +12,15 @@ export default defineConfig({
     exclude: ['lucide-react']
   },
   build: {
-    chunkSizeWarningLimit: 1600,
+    chunkSizeWarningLimit: 2000,
     rollupOptions: {
       output: {
         manualChunks: {
-          'vendor': ['react', 'react-dom', 'lucide-react', '@supabase/supabase-js'],
+          'vendor': ['react', 'react-dom', 'react-router-dom', 'lucide-react', '@supabase/supabase-js'],
+          'excel': ['xlsx', 'exceljs'],
+          'pdf': ['jspdf', 'jspdf-autotable'],
+          'viz': ['recharts'],
+          'utils': ['date-fns', 'papaparse', 'uuid']
         }
       }
     }
