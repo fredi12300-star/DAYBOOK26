@@ -2962,14 +2962,24 @@ export async function fetchLeaveMonthlyTracking(staffId: string, year: number, m
 
 export async function fetchLeaveDays(staffId: string, monthStr: string) {
     return withRetry(async () => {
+        const [year, month] = monthStr.split('-').map(Number);
+        const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
+        const lastDay = new Date(year, month, 0).getDate();
+        const monthEnd = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+
         const { data, error } = await supabase
             .from('leave_days')
-            .select('*')
+            .select('*, request:leave_requests!leave_days_request_id_fkey(status)')
             .eq('staff_id', staffId)
-            .ilike('leave_date', `${monthStr}%`)
+            .gte('leave_date', monthStart)
+            .lte('leave_date', monthEnd)
             .order('leave_date', { ascending: true });
+
         if (error) throw error;
-        return data;
+
+        // Filter out any days that belong to un-approved leaves (Parity with HR module)
+        const approvedDays = (data || []).filter((d: any) => d.request?.status === 'APPROVED');
+        return approvedDays;
     });
 }
 

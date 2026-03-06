@@ -1018,14 +1018,11 @@ export default function StaffLeave({ staff }: StaffLeaveProps) {
                                             <div className="space-y-1.5">
                                                 <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Date</label>
                                                 <input
-                                                    type={formData.from_date ? 'date' : 'text'}
-                                                    placeholder="Select Date"
-                                                    onFocus={e => e.target.type = 'date'}
-                                                    onBlur={e => { if (!e.target.value) e.target.type = 'text'; }}
+                                                    type="date"
                                                     required
                                                     value={formData.from_date}
                                                     onChange={e => setFormData(p => ({ ...p, from_date: e.target.value }))}
-                                                    className="w-full bg-slate-900 border border-slate-800 text-white rounded-2xl px-5 py-3 text-xs focus:ring-2 focus:ring-brand-500/20 outline-none transition-all [color-scheme:dark]"
+                                                    className="w-full bg-slate-900 border border-slate-800 text-white rounded-2xl px-5 py-3 text-xs focus:ring-2 focus:ring-brand-500/20 outline-none transition-all [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-50 hover:[&::-webkit-calendar-picker-indicator]:opacity-100 cursor-pointer"
                                                 />
                                             </div>
                                             <div className="flex gap-3">
@@ -1047,27 +1044,21 @@ export default function StaffLeave({ staff }: StaffLeaveProps) {
                                                 <div className="space-y-1.5">
                                                     <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Start Date</label>
                                                     <input
-                                                        type={formData.from_date ? 'date' : 'text'}
-                                                        placeholder="Start Date"
-                                                        onFocus={e => e.target.type = 'date'}
-                                                        onBlur={e => { if (!e.target.value) e.target.type = 'text'; }}
+                                                        type="date"
                                                         required
                                                         value={formData.from_date}
                                                         onChange={e => setFormData(p => ({ ...p, from_date: e.target.value }))}
-                                                        className="w-full bg-slate-900 border border-slate-800 text-white rounded-2xl px-4 py-3 text-[10px] focus:ring-2 focus:ring-brand-500/20 outline-none transition-all [color-scheme:dark]"
+                                                        className="w-full bg-slate-900 border border-slate-800 text-white rounded-2xl px-4 py-3 text-[10px] focus:ring-2 focus:ring-brand-500/20 outline-none transition-all [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-50 hover:[&::-webkit-calendar-picker-indicator]:opacity-100 cursor-pointer"
                                                     />
                                                 </div>
                                                 <div className="space-y-1.5">
                                                     <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">End Date</label>
                                                     <input
-                                                        type={formData.to_date ? 'date' : 'text'}
-                                                        placeholder="End Date"
-                                                        onFocus={e => e.target.type = 'date'}
-                                                        onBlur={e => { if (!e.target.value) e.target.type = 'text'; }}
+                                                        type="date"
                                                         required
                                                         value={formData.to_date}
                                                         onChange={e => setFormData(p => ({ ...p, to_date: e.target.value }))}
-                                                        className="w-full bg-slate-900 border border-slate-800 text-white rounded-2xl px-4 py-3 text-[10px] focus:ring-2 focus:ring-brand-500/20 outline-none transition-all [color-scheme:dark]"
+                                                        className="w-full bg-slate-900 border border-slate-800 text-white rounded-2xl px-4 py-3 text-[10px] focus:ring-2 focus:ring-brand-500/20 outline-none transition-all [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-50 hover:[&::-webkit-calendar-picker-indicator]:opacity-100 cursor-pointer"
                                                     />
                                                 </div>
                                             </div>
@@ -1286,9 +1277,9 @@ export default function StaffLeave({ staff }: StaffLeaveProps) {
                                 <div className="flex flex-col space-y-4">
                                     <div className="flex flex-wrap items-center justify-between gap-3 p-4 border border-slate-800/50 bg-slate-900/30 rounded-2xl">
                                         <div className="flex items-center gap-2">
-                                            <input type={drawerHistoryFrom ? 'date' : 'text'} placeholder="Start" onFocus={e => e.target.type = 'date'} onBlur={e => { if (!e.target.value) e.target.type = 'text'; }} value={drawerHistoryFrom} onChange={e => setDrawerHistoryFrom(e.target.value)} className="bg-slate-900 border border-slate-800 text-white rounded-lg px-2 py-1.5 text-[10px] uppercase outline-none w-28 [color-scheme:dark] placeholder:text-slate-500 placeholder:normal-case text-center" />
+                                            <input type="date" value={drawerHistoryFrom} onChange={e => setDrawerHistoryFrom(e.target.value)} className="bg-slate-900 border border-slate-800 text-white rounded-lg px-2 py-1.5 text-[10px] uppercase outline-none w-28 [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-50 hover:[&::-webkit-calendar-picker-indicator]:opacity-100 cursor-pointer placeholder:text-slate-500 text-center" />
                                             <span className="text-slate-500 font-bold">-</span>
-                                            <input type={drawerHistoryTo ? 'date' : 'text'} placeholder="End" onFocus={e => e.target.type = 'date'} onBlur={e => { if (!e.target.value) e.target.type = 'text'; }} value={drawerHistoryTo} onChange={e => setDrawerHistoryTo(e.target.value)} className="bg-slate-900 border border-slate-800 text-white rounded-lg px-2 py-1.5 text-[10px] uppercase outline-none w-28 [color-scheme:dark] placeholder:text-slate-500 placeholder:normal-case text-center" />
+                                            <input type="date" value={drawerHistoryTo} onChange={e => setDrawerHistoryTo(e.target.value)} className="bg-slate-900 border border-slate-800 text-white rounded-lg px-2 py-1.5 text-[10px] uppercase outline-none w-28 [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-50 hover:[&::-webkit-calendar-picker-indicator]:opacity-100 cursor-pointer placeholder:text-slate-500 text-center" />
                                         </div>
                                         {(drawerHistoryFrom || drawerHistoryTo) && (
                                             <button onClick={() => { setDrawerHistoryFrom(''); setDrawerHistoryTo(''); }} className="text-[10px] font-bold text-rose-400 hover:text-rose-300 uppercase tracking-widest px-3 py-1.5 border border-rose-500/20 rounded-lg bg-rose-500/5 transition-all">Clear</button>
@@ -1385,13 +1376,10 @@ export default function StaffLeave({ staff }: StaffLeaveProps) {
                                                 <div className="flex flex-col gap-1">
                                                     <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Select Month</div>
                                                     <input
-                                                        type={penaltyMonth ? 'month' : 'text'}
-                                                        placeholder="Month"
-                                                        onFocus={e => e.target.type = 'month'}
-                                                        onBlur={e => { if (!e.target.value) e.target.type = 'text'; }}
+                                                        type="month"
                                                         value={penaltyMonth}
                                                         onChange={e => setPenaltyMonth(e.target.value)}
-                                                        className="bg-slate-900 border border-slate-800 text-white rounded-lg px-3 py-2 text-xs font-black uppercase outline-none w-full [color-scheme:dark] placeholder:text-slate-500 placeholder:normal-case"
+                                                        className="bg-slate-900 border border-slate-800 text-white rounded-lg px-3 py-2 text-xs font-black uppercase outline-none w-full [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-50 hover:[&::-webkit-calendar-picker-indicator]:opacity-100 cursor-pointer"
                                                     />
                                                 </div>
 
