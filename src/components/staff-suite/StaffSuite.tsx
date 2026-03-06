@@ -15,13 +15,15 @@ import StaffProfile from './screens/StaffProfile';
 type StaffSuiteTab = 'home' | 'attendance' | 'leave' | 'salary' | 'profile';
 
 export default function StaffSuite() {
-    const { staff } = useAuth();
+    const { staff, isLoading: isAuthLoading } = useAuth();
     const [activeTab, setActiveTab] = useState<StaffSuiteTab>('home');
     const [isLoading, setIsLoading] = useState(true);
     const [todayAttendance, setTodayAttendance] = useState<any>(null);
     const [leaveBalances, setLeaveBalances] = useState<any[]>([]);
 
     useEffect(() => {
+        if (isAuthLoading) return; // Wait for Auth context to finish before checking staff
+
         if (!staff?.id) {
             setIsLoading(false);
             return;
@@ -64,7 +66,7 @@ export default function StaffSuite() {
     };
 
     const renderContent = () => {
-        if (isLoading) {
+        if (isLoading || isAuthLoading) {
             return (
                 <div className="flex flex-col items-center justify-center py-20 gap-4">
                     <div className="w-10 h-10 border-4 border-brand-500/20 border-t-brand-500 rounded-full animate-spin" />
