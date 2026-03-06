@@ -1749,8 +1749,8 @@ USING (public.has_permission('audit_logs','view_audits'));
 -- Approval requests
 DROP POLICY IF EXISTS "RLS: approval_requests" ON public.approval_requests;
 CREATE POLICY "RLS: approval_requests" ON public.approval_requests FOR ALL TO authenticated
-USING (public.has_permission('approval_hub','view_approvals') OR public.has_permission('approvals','view_approvals'))
-WITH CHECK (public.has_permission('approval_hub','view_approvals'));
+USING (public.has_permission('approval_hub','view_approvals') OR public.has_permission('approvals','view_approvals') OR requested_by = auth.uid())
+WITH CHECK (public.has_permission('approval_hub','view_approvals') OR requested_by = auth.uid());
 
 -- Global masters: allow all authenticated to SELECT, only super admin can manage
 DO $$

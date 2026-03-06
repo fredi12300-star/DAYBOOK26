@@ -279,6 +279,7 @@ export default function StaffLeave({ staff }: StaffLeaveProps) {
                         leave_request_id: newRequest.id,
                         staff_id: targetStaffId,
                         staff_name: targetStaff.full_name,
+                        staff_code: targetStaff.staff_code,
                         days_count: finalDays,
                         from_date: startDate,
                         to_date: endDate
