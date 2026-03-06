@@ -1,8 +1,6 @@
 import {
-    Calendar,
     Clock,
     AlertCircle,
-    ArrowRight,
     Briefcase,
     ShieldCheck
 } from 'lucide-react';
@@ -28,8 +26,6 @@ export default function StaffDashboard({
 
     // Use actual paid balance if available, default to 0
     const paidBalance = leaveBalance?.[0]?.paid_balance || 0;
-    const totalAllocated = 12; // Standard yearly allocation for progress bar fallback
-    const progress = Math.min(100, (paidBalance / totalAllocated) * 100);
 
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -65,35 +61,40 @@ export default function StaffDashboard({
                 </div>
             </div>
 
-            {/* Quick Summary Card */}
-            <div className="bg-gradient-to-br from-brand-600/20 to-brand-900/10 p-6 rounded-[2rem] border border-brand-500/20 shadow-glow shadow-brand-500/5">
-                <div className="flex items-center justify-between mb-6">
-                    <div className="flex items-center gap-3">
-                        <div className="p-2 bg-brand-500/20 rounded-xl">
-                            <Calendar size={18} className="text-brand-400" />
-                        </div>
-                        <h3 className="font-black uppercase tracking-widest text-xs">Leave Balance</h3>
-                    </div>
+            {/* Modern Leave Status */}
+            <div className="space-y-4">
+                <div className="flex items-center justify-between px-2">
+                    <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.4em]">Leave Status</h3>
                     <button
                         onClick={() => onNavigate('leave')}
-                        className="text-[10px] font-black text-brand-400 uppercase tracking-widest flex items-center gap-1 group"
+                        className="text-[10px] font-black text-brand-400 uppercase tracking-widest hover:text-brand-300 transition-colors"
                     >
-                        Apply <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
+                        Apply for Leave
                     </button>
                 </div>
-                <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                        <span className="text-slate-400 text-xs font-bold">Annual Paid Leave</span>
-                        <div className="flex items-baseline gap-1">
-                            <span className="text-lg font-black text-white">{paidBalance}</span>
-                            <span className="text-[10px] text-slate-500 uppercase">days</span>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-[#0f172a]/50 p-5 rounded-3xl border border-slate-800/50 relative overflow-hidden group">
+                        <div className="absolute -right-4 -top-4 w-16 h-16 bg-emerald-500/5 rounded-full group-hover:scale-150 transition-transform duration-500" />
+                        <div className="flex items-center gap-2 mb-3">
+                            <div className="p-1.5 bg-emerald-500/20 rounded-lg">
+                                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                            </div>
+                            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Remaining</p>
                         </div>
+                        <p className="text-2xl font-black text-white">{paidBalance}</p>
+                        <p className="text-[8px] font-black uppercase tracking-widest text-slate-500">Days Available</p>
                     </div>
-                    <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                        <div
-                            className="h-full bg-brand-500 rounded-full shadow-glow shadow-brand-500/30 transition-all duration-1000"
-                            style={{ width: `${progress}%` }}
-                        />
+                    <div className="bg-[#0f172a]/50 p-5 rounded-3xl border border-slate-800/50 relative overflow-hidden group">
+                        <div className="absolute -right-4 -top-4 w-16 h-16 bg-amber-500/5 rounded-full group-hover:scale-150 transition-transform duration-500" />
+                        <div className="flex items-center gap-2 mb-3">
+                            <div className="p-1.5 bg-amber-500/20 rounded-lg">
+                                <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                            </div>
+                            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Taken</p>
+                        </div>
+                        <p className="text-2xl font-black text-white">{leaveBalance?.[0]?.total_leaves_taken || 0}</p>
+                        <p className="text-[8px] font-black uppercase tracking-widest text-slate-500">Days YTD</p>
                     </div>
                 </div>
             </div>

@@ -2823,12 +2823,18 @@ export async function upsertLeavePolicy(policy: Partial<LeavePolicy>) {
     });
 }
 
-export async function fetchLeaveBalances(year: number) {
+export async function fetchLeaveBalances(year: number, staffId?: string) {
     return withRetry(async () => {
-        const { data, error } = await supabase
+        let query = supabase
             .from('leave_balances')
             .select('*, staff:staff_master(*)')
             .eq('year', year);
+
+        if (staffId) {
+            query = query.eq('staff_id', staffId);
+        }
+
+        const { data, error } = await query;
         if (error) throw error;
         return data as LeaveBalance[];
     });

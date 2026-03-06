@@ -144,10 +144,17 @@ function App() {
         if (page === 'approval_hub' && !canExecute('approval_hub', 'view_approvals')) return false;
         if (page === 'audit_logs' && !canExecute('audit_logs', 'view_audits')) return false;
 
-        if (page === 'staff_suite' && (profile?.staff?.id || isSuperAdmin)) return true;
+        if (page === 'staff_suite') {
+            console.log('DEBUG: Accessing Staff Suite check:', {
+                staffId: profile?.staff?.id,
+                isSuperAdmin,
+                hasAccess: !!(profile?.staff?.id || isSuperAdmin)
+            });
+            if (profile?.staff?.id || isSuperAdmin) return true;
+        }
 
         return canExecute(page, 'view');
-    }, [canExecute, config?.enable_txn_approvals, profile?.staff?.id]);
+    }, [canExecute, config?.enable_txn_approvals, profile?.staff?.id, isSuperAdmin]);
 
 
     const handleSafeNavigate = useCallback((destination: Page) => {
