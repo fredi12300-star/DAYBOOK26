@@ -321,28 +321,7 @@ function App() {
     if (isStaffOnlyUser) {
         return (
             <div className="min-h-screen bg-[#020617] text-slate-100 font-sans antialiased">
-                {/* Minimal header with just the business name and logout */}
-                <header className="fixed top-0 inset-x-0 z-50 flex items-center justify-between px-6 py-3 bg-[#0f172a]/80 backdrop-blur-md border-b border-slate-800/30">
-                    <div className="flex items-center gap-3">
-                        {config?.business_logo_url ? (
-                            <img src={config.business_logo_url} alt="Logo" className="w-7 h-7 object-contain rounded-full border border-slate-700" />
-                        ) : (
-                            <div className="p-1.5 bg-brand-600 rounded-lg"><BookOpen size={14} className="text-white" /></div>
-                        )}
-                        <span className="text-xs font-black uppercase tracking-widest text-slate-300">{config?.business_name || 'Staff Suite'}</span>
-                    </div>
-                    <button
-                        onClick={handleLogout}
-                        className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-xl border border-transparent hover:border-red-500/20 transition-all"
-                    >
-                        <LogOut size={13} />
-                        Sign Out
-                    </button>
-                </header>
-                {/* Staff Suite — full viewport below the minimal header */}
-                <div className="pt-14">
-                    <StaffSuite />
-                </div>
+                <StaffSuite />
                 <Toaster position="top-right" toastOptions={{
                     duration: 5000,
                     style: { background: '#0f172a', color: '#f1f5f9', border: '1px solid rgba(148,163,184,0.1)', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.1em' }

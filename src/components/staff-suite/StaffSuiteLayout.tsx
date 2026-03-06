@@ -5,8 +5,10 @@ import {
     FileText,
     CreditCard,
     User,
-    ChevronLeft
+    ChevronLeft,
+    LogOut
 } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
 
 interface StaffSuiteLayoutProps {
     children: React.ReactNode;
@@ -50,9 +52,20 @@ export default function StaffSuiteLayout({
                         {title}
                     </h1>
                 </div>
-                <div className="w-8 h-8 rounded-full bg-brand-500/10 border border-brand-500/20 flex items-center justify-center">
-                    <div className="w-2 h-2 rounded-full bg-brand-500 animate-pulse" />
-                </div>
+                <button
+                    onClick={async () => {
+                        try {
+                            await supabase.auth.signOut({ scope: 'local' });
+                        } catch (error) {
+                            console.error('Logout failed:', error);
+                        }
+                    }}
+                    className="p-2 sm:px-3 sm:py-1.5 flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
+                    title="Sign Out"
+                >
+                    <span className="hidden sm:inline">Sign Out</span>
+                    <LogOut size={16} />
+                </button>
             </header>
 
             {/* Content Area */}
@@ -71,8 +84,8 @@ export default function StaffSuiteLayout({
                                 key={tab.id}
                                 onClick={() => onTabChange(tab.id)}
                                 className={`flex flex-col items-center gap-1.5 p-2 transition-all duration-300 ${isActive
-                                        ? 'text-brand-400 scale-110'
-                                        : 'text-slate-500 opacity-60'
+                                    ? 'text-brand-400 scale-110'
+                                    : 'text-slate-500 opacity-60'
                                     }`}
                             >
                                 <div className={`p-2 rounded-xl transition-all ${isActive ? 'bg-brand-500/10 shadow-glow shadow-brand-500/10' : ''
