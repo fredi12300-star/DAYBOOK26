@@ -5,11 +5,11 @@ import {
     History,
     FileText
 } from 'lucide-react';
-import { StaffMaster } from '../../../types/accounting';
+import { StaffProfile } from '../../../types/accounting';
 import { fetchLeaveBalances, fetchLeaveRequests } from '../../../lib/supabase';
 
 interface StaffLeaveProps {
-    staff: StaffMaster;
+    staff: StaffProfile;
 }
 
 export default function StaffLeave({ staff }: StaffLeaveProps) {

@@ -4,7 +4,7 @@ import {
     Template, TemplateGroup, Party, PartyGroup,
     TransactionSession, SessionFormData, UOM,
     FinancialYear, SystemConfiguration, SystemDateLog, BankStatus, ApprovalStatus, ReferencePrefix, BankTxnExport,
-    StaffMaster, Role, UserOrgAccess, ApprovalRequest, Device, DeviceDepartment,
+    StaffProfile, Role, UserOrgAccess, ApprovalRequest, Device, DeviceDepartment,
     AccountNature, Side, TrialBalanceRow,
     LeavePolicy, LeaveBalance, LeaveRequest,
     ExitPolicy, ExitCase, ExitChecklistTemplate, ExitChecklistItem, ExitClearanceTask, ExitFnfSettlement,

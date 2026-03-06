@@ -441,7 +441,7 @@ export interface UserProfile {
     staff_id: string | null;
     is_super_admin: boolean;
     created_at: string;
-    staff?: StaffMaster;
+    staff?: StaffProfile;
 }
 
 // ================================================================
@@ -495,7 +495,7 @@ export interface AttendanceMonthlySnapshot {
     locked_by?: string;
     is_locked: boolean;
     checksum?: string;
-    staff?: StaffMaster;
+    staff?: StaffProfile;
 }
 
 export interface AttendancePayrollExport {
@@ -528,7 +528,7 @@ export interface AttendanceDeltaAdjustment {
     created_at: string;
     created_by?: string;
     processed_at?: string;
-    staff?: StaffMaster;
+    staff?: StaffProfile;
 }
 
 export interface PayrollReconciliation {
@@ -606,7 +606,7 @@ export interface AttendanceRecord {
     created_at?: string;
     updated_at?: string;
     // Joined / RPC Fields
-    staff?: StaffMaster;
+    staff?: StaffProfile;
     incident?: AttendanceIncident;
     correction?: AttendanceCorrection;
     conflict_flag?: boolean;

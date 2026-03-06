@@ -10,11 +10,11 @@ import {
     ChevronRight,
     Camera
 } from 'lucide-react';
-import { StaffMaster } from '../../../types/accounting';
+import { StaffProfile } from '../../../types/accounting';
 import { supabase } from '../../../lib/supabase';
 
 interface StaffProfileProps {
-    staff: StaffMaster;
+    staff: StaffProfile;
 }
 
 export default function StaffProfile({ staff }: StaffProfileProps) {

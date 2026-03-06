@@ -4,13 +4,13 @@ import {
     UserProfile,
     UserOrgAccess,
     Role,
-    StaffMaster
+    StaffProfile
 } from '../types/accounting';
 
 interface AuthSession {
     user: any | null;
     profile: UserProfile | null;
-    staff: StaffMaster | null;
+    staff: StaffProfile | null;
     access: (UserOrgAccess & { role: Role })[];
     devicePermissions: Record<string, string[]> | null;
     isLoading: boolean;

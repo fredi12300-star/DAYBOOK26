@@ -7,11 +7,11 @@ import {
     ChevronRight,
     Search
 } from 'lucide-react';
-import { AttendanceRecord, StaffMaster } from '../../../types/accounting';
+import { AttendanceRecord, StaffProfile } from '../../../types/accounting';
 import { fetchStaffAttendanceHistory } from '../../../lib/supabase';
 
 interface StaffAttendanceProps {
-    staff: StaffMaster;
+    staff: StaffProfile;
 }
 
 export default function StaffAttendance({ staff }: StaffAttendanceProps) {
