@@ -383,11 +383,7 @@ export default function StaffLeave({ staff }: StaffLeaveProps) {
             {activeTab === 'balances' ? (
                 <div className="space-y-6">
                     <div className="grid grid-cols-2 gap-4">
-                        {isLoading ? (
-                            [1, 2].map(i => (
-                                <div key={i} className="h-32 bg-slate-800/20 rounded-3xl border border-slate-800 animate-pulse" />
-                            ))
-                        ) : balances.length === 0 ? (
+                        {balances.length === 0 && !isLoading ? (
                             <div className="col-span-2 p-10 bg-slate-800/20 rounded-3xl border border-dashed border-slate-800 text-center">
                                 <p className="text-xs font-bold text-slate-500">No leave policies assigned</p>
                             </div>
