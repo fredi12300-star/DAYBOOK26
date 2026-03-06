@@ -233,12 +233,6 @@ export default function StaffLeave({ staff }: StaffLeaveProps) {
                 finalDays = Math.max(0, rawDays);
             }
 
-            // Determine finalType based on simulation (assuming simulation logic is run before this)
-            // For now, we'll keep it 'PAID' as per original, or derive if simulation provides it.
-            // The instruction implies `finalType` should be used, but it's not calculated here.
-            // Sticking to 'PAID' for now, as the backend handles allocation.
-            const finalType = 'PAID';
-
             // Threshold Breach / Approval Hub Routing
             const threshold = activePolicy?.consecutive_limit || 3;
             const needsApproval = finalDays > threshold;
@@ -255,7 +249,6 @@ export default function StaffLeave({ staff }: StaffLeaveProps) {
 
             const request: Partial<LeaveRequest> = {
                 staff_id: targetStaffId,
-                leave_type: finalType as any,
                 from_date: startDate,
                 to_date: endDate,
                 days_count: finalDays,
@@ -297,9 +290,9 @@ export default function StaffLeave({ staff }: StaffLeaveProps) {
                 reason: ''
             });
             await loadLeaveData();
-        } catch (error) {
+        } catch (error: any) {
             console.error('Failed to submit leave request:', error);
-            toast.error('Failed to submit leave request');
+            toast.error(error?.message || 'Failed to submit leave request');
         } finally {
             setIsSubmitting(false);
         }
