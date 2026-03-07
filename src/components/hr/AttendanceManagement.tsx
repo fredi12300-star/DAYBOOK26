@@ -1122,9 +1122,10 @@ export default function AttendanceManagement() {
                                 <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Grace In (Mins)</label>
                                 <input
                                     type="number"
-                                    value={editingShift?.grace_in_minutes || 0}
-                                    onChange={e => setEditingShift({ ...editingShift, grace_in_minutes: parseInt(e.target.value) })}
+                                    value={editingShift?.grace_in_minutes === undefined || editingShift.grace_in_minutes === 0 ? '' : editingShift.grace_in_minutes}
+                                    onChange={e => setEditingShift({ ...editingShift, grace_in_minutes: e.target.value === '' ? 0 : parseInt(e.target.value) })}
                                     className="input-base"
+                                    placeholder="0"
                                 />
                             </div>
 
@@ -1132,9 +1133,10 @@ export default function AttendanceManagement() {
                                 <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Grace Out (Mins)</label>
                                 <input
                                     type="number"
-                                    value={editingShift?.grace_out_minutes || 0}
-                                    onChange={e => setEditingShift({ ...editingShift, grace_out_minutes: parseInt(e.target.value) })}
+                                    value={editingShift?.grace_out_minutes === undefined || editingShift.grace_out_minutes === 0 ? '' : editingShift.grace_out_minutes}
+                                    onChange={e => setEditingShift({ ...editingShift, grace_out_minutes: e.target.value === '' ? 0 : parseInt(e.target.value) })}
                                     className="input-base"
+                                    placeholder="0"
                                 />
                             </div>
 
@@ -1155,9 +1157,10 @@ export default function AttendanceManagement() {
                                 <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Break Duration (Mins)</label>
                                 <input
                                     type="number"
-                                    value={editingShift?.break_duration_minutes || 0}
-                                    onChange={e => setEditingShift({ ...editingShift, break_duration_minutes: parseInt(e.target.value) })}
+                                    value={editingShift?.break_duration_minutes === undefined || editingShift.break_duration_minutes === 0 ? '' : editingShift.break_duration_minutes}
+                                    onChange={e => setEditingShift({ ...editingShift, break_duration_minutes: e.target.value === '' ? 0 : parseInt(e.target.value) })}
                                     className="input-base"
+                                    placeholder="0"
                                 />
                             </div>
 
