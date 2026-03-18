@@ -8,7 +8,8 @@ import {
     Search
 } from 'lucide-react';
 import { AttendanceRecord, StaffMaster } from '../../../types/accounting';
-import { fetchStaffAttendanceHistory } from '../../../lib/supabase';
+import { fetchStaffAttendanceHistory, fetchShiftGroups } from '../../../lib/supabase';
+import { ShiftGroup } from '../../../types/accounting';
 
 interface StaffAttendanceProps {
     staff: StaffMaster;
@@ -16,6 +17,7 @@ interface StaffAttendanceProps {
 
 export default function StaffAttendance({ staff }: StaffAttendanceProps) {
     const [history, setHistory] = useState<AttendanceRecord[]>([]);
+    const [shiftGroups, setShiftGroups] = useState<ShiftGroup[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [currentMonth, setCurrentMonth] = useState(new Date());
 
@@ -25,8 +27,12 @@ export default function StaffAttendance({ staff }: StaffAttendanceProps) {
             try {
                 const start = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1).toISOString().split('T')[0];
                 const end = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0).toISOString().split('T')[0];
-                const data = await fetchStaffAttendanceHistory(staff.id, start, end);
+                const [data, groups] = await Promise.all([
+                    fetchStaffAttendanceHistory(staff.id, start, end),
+                    fetchShiftGroups()
+                ]);
                 setHistory(data);
+                setShiftGroups(groups);
             } catch (error) {
                 console.error('Failed to load attendance history:', error);
             } finally {
@@ -53,11 +59,83 @@ export default function StaffAttendance({ staff }: StaffAttendanceProps) {
         }
     };
 
-    const stats = {
-        present: history.filter(h => h.status === 'PRESENT' || h.status === 'LATE_PRESENT').length,
-        absent: history.filter(h => h.status === 'ABSENT').length,
-        late: history.filter(h => h.status === 'LATE_PRESENT').length,
+    const parseTimeToMins = (timeInput: string | null, isUtc: boolean = false) => {
+        if (!timeInput) return null;
+        if (timeInput.includes('T')) {
+            const date = new Date(timeInput);
+            if (isNaN(date.getTime())) return null;
+            return date.getHours() * 60 + date.getMinutes();
+        }
+        const parts = timeInput.split(':');
+        if (parts.length >= 2) {
+            let mins = parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+            if (isUtc) {
+                const offset = new Date().getTimezoneOffset();
+                mins = mins - offset;
+                if (mins < 0) mins += 24 * 60;
+                if (mins >= 24 * 60) mins -= 24 * 60;
+            }
+            return mins;
+        }
+        return null;
     };
+
+    const stats = {
+        present: history.filter(h => h.status === 'PRESENT' || h.status === 'LATE_PRESENT' || h.status === 'EARLY_OUT').length,
+        absent: history.filter(h => h.status === 'ABSENT').length,
+    };
+
+    const profileMetrics = (() => {
+        const defaultMetrics = { late: 0, early: 0, overBreak: 0, overTime: 0 };
+        const shiftGroup = staff.shift_group || shiftGroups.find(g => g.id === staff.shift_group_id);
+        if (!shiftGroup) return defaultMetrics;
+
+        let late = 0;
+        let early = 0;
+        let overBreak = 0;
+        let overTime = 0;
+
+        const shiftStart = parseTimeToMins(shiftGroup.start_time);
+        const shiftEnd = parseTimeToMins(shiftGroup.end_time);
+        const graceIn = shiftGroup.grace_in_minutes || 0;
+        const graceOut = shiftGroup.grace_out_minutes || 0;
+        const breakDur = shiftGroup.break_duration_minutes || 0;
+
+        history.forEach(hr => {
+            if (hr.status === 'HOLIDAY' || hr.status === 'LEAVE' || hr.status === 'WEEKLY_OFF') return;
+
+            const pi = parseTimeToMins(hr.punch_in, true);
+            const po = parseTimeToMins(hr.punch_out, true);
+            const li = parseTimeToMins(hr.lunch_in, true);
+            const lo = parseTimeToMins(hr.lunch_out, true);
+
+            if (shiftStart !== null && pi !== null && pi > shiftStart + graceIn) {
+                const excuse = hr.excused_late_minutes || 0;
+                const lateMins = (pi - (shiftStart + graceIn)) - excuse;
+                if (lateMins > 0) late += lateMins;
+            }
+
+            if (shiftEnd !== null && po !== null && po < shiftEnd - graceOut) {
+                const earlyMins = (shiftEnd - graceOut) - po;
+                if (earlyMins > 0) early += earlyMins;
+            }
+
+            if (shiftEnd !== null && po !== null && po > shiftEnd) {
+                const overTimeMins = po - shiftEnd;
+                overTime += overTimeMins;
+            }
+
+            if (li !== null && lo !== null && li > lo) {
+                const taken = li - lo;
+                if (taken > breakDur) {
+                    const overMins = taken - breakDur;
+                    overBreak += overMins;
+                }
+            }
+        });
+
+        return { late, early, overBreak, overTime };
+    })();
 
     return (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-10">
@@ -85,18 +163,33 @@ export default function StaffAttendance({ staff }: StaffAttendanceProps) {
             </div>
 
             {/* Stats Summary */}
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
                 <div className="bg-[#0f172a]/50 p-4 rounded-2xl border border-slate-800/50 text-center">
                     <p className="text-xl font-black text-emerald-400">{stats.present}</p>
-                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">Present</p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">Days Present</p>
                 </div>
                 <div className="bg-[#0f172a]/50 p-4 rounded-2xl border border-slate-800/50 text-center">
                     <p className="text-xl font-black text-red-500">{stats.absent}</p>
-                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">Absent</p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">Days Absent</p>
                 </div>
-                <div className="bg-[#0f172a]/50 p-4 rounded-2xl border border-slate-800/50 text-center">
-                    <p className="text-xl font-black text-amber-500">{stats.late}</p>
-                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">Late</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+                <div className="bg-[#0f172a]/50 p-4 rounded-2xl border border-rose-500/20 text-center">
+                    <p className="text-xl font-black text-rose-400">{profileMetrics.late}<span className="text-[8px] text-rose-500/50 ml-1">mins</span></p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-rose-500 mt-1">Total Late</p>
+                </div>
+                <div className="bg-[#0f172a]/50 p-4 rounded-2xl border border-orange-500/20 text-center">
+                    <p className="text-xl font-black text-orange-400">{profileMetrics.early}<span className="text-[8px] text-orange-500/50 ml-1">mins</span></p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-orange-500 mt-1">Early Out</p>
+                </div>
+                <div className="bg-[#0f172a]/50 p-4 rounded-2xl border border-amber-500/20 text-center">
+                    <p className="text-xl font-black text-amber-400">{profileMetrics.overBreak}<span className="text-[8px] text-amber-500/50 ml-1">mins</span></p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-amber-500 mt-1">Excess Break</p>
+                </div>
+                <div className="bg-[#0f172a]/50 p-4 rounded-2xl border border-emerald-500/20 text-center">
+                    <p className="text-xl font-black text-emerald-400">{profileMetrics.overTime}<span className="text-[8px] text-emerald-500/50 ml-1">mins</span></p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-emerald-500 mt-1">Over Time</p>
                 </div>
             </div>
 
@@ -144,12 +237,25 @@ export default function StaffAttendance({ staff }: StaffAttendanceProps) {
                                                 </span>
                                             )}
                                         </div>
-                                        <div className="flex items-center gap-3 text-[10px] font-bold text-slate-400">
-                                            <span className="flex items-center gap-1">
-                                                <Clock size={10} /> {formatTime(record.punch_in)}
-                                            </span>
-                                            <span>-</span>
-                                            <span>{formatTime(record.punch_out)}</span>
+                                        <div className="flex flex-col gap-1.5 mt-2">
+                                            <div className="flex items-center gap-3 text-[10px] font-bold text-slate-300">
+                                                <span className="flex items-center gap-1 w-[45px] text-slate-500 uppercase tracking-widest text-[8px]">
+                                                    <Clock size={10} className="text-emerald-400" /> Shift
+                                                </span>
+                                                <span className="text-white bg-slate-800/50 px-2 py-0.5 rounded">{formatTime(record.punch_in)}</span>
+                                                <span className="text-slate-600">-</span>
+                                                <span className="text-white bg-slate-800/50 px-2 py-0.5 rounded">{formatTime(record.punch_out)}</span>
+                                            </div>
+                                            {(record.lunch_out || record.lunch_in) && (
+                                                <div className="flex items-center gap-3 text-[10px] font-bold text-slate-400">
+                                                    <span className="flex items-center gap-1 w-[45px] text-slate-500 uppercase tracking-widest text-[8px]">
+                                                        <Clock size={10} className="text-amber-400" /> Break
+                                                    </span>
+                                                    <span className="text-rose-300 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">{formatTime(record.lunch_out)}</span>
+                                                    <span className="text-slate-600">-</span>
+                                                    <span className="text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">{formatTime(record.lunch_in)}</span>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 </div>

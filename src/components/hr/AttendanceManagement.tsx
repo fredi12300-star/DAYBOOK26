@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
     Users,
     CheckCircle2,
@@ -49,6 +49,180 @@ const getWeekday = (dateStr: string) => {
     if (isNaN(y) || isNaN(m) || isNaN(d)) return '-';
     return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'long' });
 };
+
+/**
+ * Compact 12-hour AM/PM time picker.
+ * Uses styled number inputs — no native select dropdowns, no long lists.
+ * Accepts and emits value in "HH:mm" (24h) format.
+ */
+function TimeInput12({
+    value,
+    onChange,
+    disabled,
+    className,
+}: {
+    value: string;      // HH:mm (24h)
+    onChange: (val: string) => void;
+    disabled?: boolean;
+    className?: string;
+}) {
+    const isEmpty = !value;
+
+    const parse = (v: string): { h12: number; min: number; ampm: 'AM' | 'PM' } => {
+        if (!v) return { h12: 12, min: 0, ampm: 'AM' };
+        const [h, m] = v.split(':').map(Number);
+        return {
+            ampm: h >= 12 ? 'PM' : 'AM',
+            h12: h % 12 === 0 ? 12 : h % 12,
+            min: isNaN(m) ? 0 : m,
+        };
+    };
+
+    const { h12, min, ampm } = parse(value);
+
+    const emit = (h: number, m: number, ap: 'AM' | 'PM') => {
+        let h24 = h % 12;
+        if (ap === 'PM') h24 += 12;
+        onChange(`${String(h24).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+    };
+
+    // Digit buffers for direct typing
+    const hBuf = useRef('');
+    const mBuf = useRef('');
+    const minRef = useRef<HTMLInputElement>(null);
+
+    const cellCls = `w-8 bg-transparent text-center text-[13px] font-black outline-none caret-transparent
+        select-none focus:bg-brand-500/10 rounded focus:text-brand-400 transition-colors
+        ${isEmpty ? 'text-slate-600' : 'text-white'}
+        ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`;
+
+    const handleWheel = (field: 'h' | 'm', e: React.WheelEvent) => {
+        if (disabled) return;
+        e.preventDefault();
+        const dir = e.deltaY < 0 ? 1 : -1;
+        if (field === 'h') {
+            const next = ((h12 - 1 + dir + 12) % 12) + 1;
+            emit(next, min, ampm);
+        } else {
+            const next = (min + dir + 60) % 60;
+            emit(h12, next, ampm);
+        }
+    };
+
+    const handleKeyDown = (field: 'h' | 'm', e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (disabled) return;
+
+        // Arrow key increment/decrement
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            const dir = e.key === 'ArrowUp' ? 1 : -1;
+            if (field === 'h') emit(((h12 - 1 + dir + 12) % 12) + 1, min, ampm);
+            else emit(h12, (min + dir + 60) % 60, ampm);
+            return;
+        }
+
+        // Tab to move between fields
+        if (e.key === 'Tab' && field === 'h') {
+            hBuf.current = '';
+            return; // let browser handle focus
+        }
+
+        // Digit typing
+        if (/^\d$/.test(e.key)) {
+            e.preventDefault();
+            if (field === 'h') {
+                const buf = hBuf.current + e.key;
+                const num = parseInt(buf, 10);
+                if (buf.length === 1) {
+                    if (num === 0) {
+                        // wait for second digit
+                        hBuf.current = buf;
+                        emit(12, min, ampm); // show 12 as placeholder
+                    } else if (num >= 2 && num <= 9) {
+                        // single digit 2-9 is unambiguous
+                        hBuf.current = '';
+                        emit(num, min, ampm);
+                        minRef.current?.focus();
+                    } else {
+                        // digit is 1 — wait for second
+                        hBuf.current = buf;
+                        emit(num, min, ampm);
+                    }
+                } else {
+                    // second digit
+                    hBuf.current = '';
+                    const clamped = Math.min(Math.max(num, 1), 12);
+                    emit(clamped, min, ampm);
+                    minRef.current?.focus();
+                }
+            } else {
+                const buf = mBuf.current + e.key;
+                const num = parseInt(buf, 10);
+                if (buf.length === 1) {
+                    if (num >= 6) {
+                        // single digit 6-9 is unambiguous minute tens
+                        mBuf.current = '';
+                        emit(h12, num, ampm);
+                    } else {
+                        mBuf.current = buf;
+                        emit(h12, num * 10, ampm); // tentative preview
+                    }
+                } else {
+                    mBuf.current = '';
+                    const clamped = Math.min(num, 59);
+                    emit(h12, clamped, ampm);
+                }
+            }
+        }
+    };
+
+    return (
+        <div className={`flex items-center ${className || ''}`}>
+            <div className={`flex items-center gap-0 bg-slate-900 border border-slate-700 rounded-lg overflow-hidden ${disabled ? 'opacity-50' : 'hover:border-slate-600'} transition-colors`}>
+                {/* Hour */}
+                <input
+                    readOnly
+                    disabled={disabled}
+                    value={isEmpty ? '--' : String(h12).padStart(2, '0')}
+                    tabIndex={0}
+                    onWheel={e => handleWheel('h', e)}
+                    onKeyDown={e => handleKeyDown('h', e)}
+                    className={`${cellCls} pl-2`}
+                    style={{ width: 30 }}
+                />
+                <span className="text-slate-500 font-black text-xs select-none">:</span>
+                {/* Minute */}
+                <input
+                    ref={minRef}
+                    readOnly
+                    disabled={disabled}
+                    value={isEmpty ? '--' : String(min).padStart(2, '0')}
+                    tabIndex={0}
+                    onWheel={e => handleWheel('m', e)}
+                    onKeyDown={e => handleKeyDown('m', e)}
+                    className={`${cellCls} pr-1`}
+                    style={{ width: 28 }}
+                />
+                {/* AM/PM toggle */}
+                <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => !disabled && emit(h12, min, ampm === 'AM' ? 'PM' : 'AM')}
+                    className={`px-2 py-1 text-[10px] font-black tracking-widest border-l border-slate-700 transition-colors select-none
+                        ${isEmpty
+                            ? 'text-slate-600 bg-transparent'
+                            : ampm === 'AM'
+                                ? 'text-sky-400 bg-sky-500/10 hover:bg-sky-500/20'
+                                : 'text-orange-400 bg-orange-500/10 hover:bg-orange-500/20'}
+                        ${disabled ? 'pointer-events-none' : ''}
+                    `}
+                >
+                    {isEmpty ? '--' : ampm}
+                </button>
+            </div>
+        </div>
+    );
+}
 
 export default function AttendanceManagement() {
     const [activeTab, setActiveTab] = useState<'update' | 'incidents' | 'profiles' | 'reports' | 'policy'>('update');
@@ -253,7 +427,11 @@ export default function AttendanceManagement() {
             }));
 
             await upsertAttendanceRecords(recordsToSave);
-            if (isVerification) await verifyDayRPC({ p_date: selectedDate, p_verified_by: user?.id || '' });
+            if (isVerification) await verifyDayRPC({
+                p_date: selectedDate,
+                p_verified_by: user?.id || '',
+                ...(selectedShiftGroupId !== 'all' && { p_shift_group_id: selectedShiftGroupId }),
+            });
 
             await loadData();
             setIsVerifyModalOpen(false);
@@ -302,13 +480,10 @@ export default function AttendanceManagement() {
             return;
         }
 
-        // For standard users/managers - request a correction
+        // For standard users/managers - open the correction request modal
         if (!canApproveCorrection) {
             setCorrectionModal({ staffId, field, value: finalValue, oldValue });
             setCorrectionReason('');
-        } else if (reason) {
-            submitCorrection(staffId, field, finalValue, reason);
-            setCorrectionModal(null);
         }
     };
 
@@ -337,10 +512,11 @@ export default function AttendanceManagement() {
     }
 
     const stats = useMemo(() => {
+        const leaveStaffIds = new Set(leaveDays.map(ld => ld.staff_id));
         return {
             total: staff.length,
             present: records.filter(r => ['PRESENT', 'LATE_PRESENT', 'EARLY_OUT'].includes(r.status)).length,
-            absent: staff.length - records.filter(r => r.status && r.status !== 'ABSENT').length,
+            absent: staff.length - leaveStaffIds.size - records.filter(r => r.status && r.status !== 'ABSENT').length,
             leave: leaveDays.length,
             missPunch: records.filter(r => r.status === 'MISS_PUNCH').length,
             incidents: incidents.filter(i => i.status === 'PENDING').length,
@@ -358,6 +534,95 @@ export default function AttendanceManagement() {
         });
         return groups;
     }, [staff, selectedShiftGroupId]);
+
+    const parseTimeToMins = (timeInput: string | null, isUtc: boolean = false) => {
+        if (!timeInput) return null;
+
+        if (timeInput.includes('T')) {
+            const date = new Date(timeInput);
+            if (isNaN(date.getTime())) return null;
+            return date.getHours() * 60 + date.getMinutes();
+        }
+
+        const parts = timeInput.split(':');
+        if (parts.length >= 2) {
+            let mins = parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+            if (isUtc) {
+                // Apply local timezone offset (offset is in minutes, e.g., -330 for IST which is UTC+5:30)
+                // getTimezoneOffset() returns difference in minutes from local time to UTC.
+                // For IST (UTC+5:30), it returns -330.
+                // So local = UTC - offset
+                const offset = new Date().getTimezoneOffset();
+                mins = mins - offset;
+
+                // Handle day wrap-around
+                if (mins < 0) mins += 24 * 60;
+                if (mins >= 24 * 60) mins -= 24 * 60;
+            }
+            return mins;
+        }
+
+        return null;
+    };
+
+    const profileMetrics = useMemo(() => {
+        if (!selectedStaffId) return { late: 0, early: 0, overBreak: 0 };
+        const s = staff.find(staff => staff.id === selectedStaffId);
+        if (!s) return { late: 0, early: 0, overBreak: 0 };
+
+        // Prefer the joined shift_group on the staff record, fall back to shiftGroups state
+        const shiftGroup = s.shift_group || shiftGroups.find(g => g.id === s.shift_group_id);
+        if (!shiftGroup) return { late: 0, early: 0, overBreak: 0 };
+
+        let late = 0;
+        let early = 0;
+        let overBreak = 0;
+        let overTime = 0;
+
+        const shiftStart = parseTimeToMins(shiftGroup.start_time);
+        const shiftEnd = parseTimeToMins(shiftGroup.end_time);
+        const graceIn = shiftGroup.grace_in_minutes || 0;
+        const graceOut = shiftGroup.grace_out_minutes || 0;
+        const breakDur = shiftGroup.break_duration_minutes || 0;
+
+        historyRecords.forEach(hr => {
+            if (hr.status === 'HOLIDAY' || hr.status === 'LEAVE' || hr.status === 'WEEKLY_OFF') return;
+
+            // Database time columns are returned as UTC strings without a timezone indicator (e.g., "03:30:00" for 9:00 AM IST)
+            const pi = parseTimeToMins(hr.punch_in, true);
+            const po = parseTimeToMins(hr.punch_out, true);
+            const li = parseTimeToMins(hr.lunch_in, true);
+            const lo = parseTimeToMins(hr.lunch_out, true);
+
+            if (shiftStart !== null && pi !== null && pi > shiftStart + graceIn) {
+                const excuse = hr.excused_late_minutes || 0;
+                // Late minutes = how far past the grace window, minus any excused time
+                const lateMins = (pi - (shiftStart + graceIn)) - excuse;
+                if (lateMins > 0) late += lateMins;
+            }
+
+            if (shiftEnd !== null && po !== null && po < shiftEnd - graceOut) {
+                // Early out minutes = how far before the grace-out cutoff
+                const earlyMins = (shiftEnd - graceOut) - po;
+                if (earlyMins > 0) early += earlyMins;
+            }
+
+            if (shiftEnd !== null && po !== null && po > shiftEnd) {
+                const overTimeMins = po - shiftEnd;
+                overTime += overTimeMins;
+            }
+
+            if (li !== null && lo !== null && li > lo) {
+                const taken = li - lo;
+                if (taken > breakDur) {
+                    const overMins = taken - breakDur;
+                    overBreak += overMins;
+                }
+            }
+        });
+
+        return { late, early, overBreak, overTime };
+    }, [historyRecords, staff, shiftGroups, selectedStaffId]);
 
     return (
         <div className="flex flex-col h-full bg-[#020617] overflow-hidden">
@@ -395,19 +660,21 @@ export default function AttendanceManagement() {
             <div className="flex-1 overflow-y-auto custom-scrollbar">
                 {activeTab === 'update' && (
                     <div className="p-8 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                        <div className="flex flex-wrap items-center gap-3">
-                            <div className="flex items-center gap-2 mr-2">
-                                <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="input-base !py-2 !px-4 text-[11px] font-bold" />
-                                <div className="px-4 py-2 bg-slate-900 border border-slate-800 rounded-xl text-[10px] font-black text-brand-400 uppercase tracking-[0.2em] shadow-inner">
-                                    {getWeekday(selectedDate)}
+                        <div className="flex flex-wrap items-start gap-4">
+                            <div className="flex items-start gap-3">
+                                <div className="flex flex-col gap-1.5">
+                                    <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="input-base !py-2.5 !px-4 text-[12px] font-black tracking-widest bg-slate-900 border-slate-700 w-44" />
+                                    <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1">
+                                        {getWeekday(selectedDate)}
+                                    </div>
                                 </div>
                                 {isWriteDisabled && (
-                                    <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-xl text-[10px] font-black uppercase tracking-widest">
+                                    <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-xl text-[10px] font-black uppercase tracking-widest mt-0">
                                         <Lock className="w-3 h-3" /> Locked
                                     </div>
                                 )}
                             </div>
-                            <select value={selectedShiftGroupId} onChange={e => setSelectedShiftGroupId(e.target.value)} className="input-base !py-2 !px-4 text-[11px] font-bold">
+                            <select value={selectedShiftGroupId} onChange={e => setSelectedShiftGroupId(e.target.value)} className="input-base !py-2.5 !px-4 text-[12px] font-black tracking-widest bg-slate-900 border-slate-700 w-48 appearance-none mt-0">
                                 <option value="all">All Shifts</option>
                                 {shiftGroups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
                             </select>
@@ -415,7 +682,7 @@ export default function AttendanceManagement() {
                                 <button
                                     onClick={() => setIsIncidentModalOpen(true)}
                                     disabled={isWriteDisabled}
-                                    className="flex items-center gap-2 px-4 py-2 bg-rose-500/10 text-rose-500 border border-rose-500/20 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all ml-auto disabled:opacity-50 disabled:hover:bg-rose-500/10 disabled:hover:text-rose-500"
+                                    className="flex items-center justify-center gap-2 px-5 py-2.5 bg-rose-500/10 text-rose-500 border border-rose-500/20 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all ml-auto disabled:opacity-50 disabled:hover:bg-rose-500/10 disabled:hover:text-rose-500 mt-0"
                                 >
                                     <ShieldAlert className="w-4 h-4" /> {isWriteDisabled ? 'Locked' : 'Report Incident'}
                                 </button>
@@ -514,12 +781,11 @@ export default function AttendanceManagement() {
                                                                         )}
                                                                     </div>
                                                                     <div className="relative group/time">
-                                                                        <input
-                                                                            type="time"
+                                                                        <TimeInput12
                                                                             disabled={isWriteDisabled || isLeave}
                                                                             value={formatISOToLocalTime(record?.punch_in || null)}
-                                                                            onChange={e => updateRecordLocal(s.id, 'punch_in', e.target.value)}
-                                                                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-1.5 text-[11px] text-white outline-none focus:border-brand-500 disabled:opacity-50"
+                                                                            onChange={val => updateRecordLocal(s.id, 'punch_in', val)}
+                                                                            className="w-full"
                                                                         />
                                                                         {(record?.late_minutes || 0) > 0 && (
                                                                             <div className="absolute -top-1 -right-1 flex gap-1">
@@ -541,12 +807,11 @@ export default function AttendanceManagement() {
                                                                         )}
                                                                     </div>
                                                                     <div className="relative group/time">
-                                                                        <input
-                                                                            type="time"
+                                                                        <TimeInput12
                                                                             disabled={isWriteDisabled || isLeave}
                                                                             value={formatISOToLocalTime(record?.punch_out || null)}
-                                                                            onChange={e => updateRecordLocal(s.id, 'punch_out', e.target.value)}
-                                                                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-1.5 text-[11px] text-white outline-none focus:border-brand-500 disabled:opacity-50"
+                                                                            onChange={val => updateRecordLocal(s.id, 'punch_out', val)}
+                                                                            className="w-full"
                                                                         />
                                                                         {(record?.early_out_minutes || 0) > 0 && (
                                                                             <div className="absolute -top-1 -right-1 flex gap-1">
@@ -559,22 +824,20 @@ export default function AttendanceManagement() {
                                                                 </div>
                                                                 <div className="space-y-1">
                                                                     <label className="text-[7px] font-black text-rose-400 uppercase tracking-widest">Lunch Out</label>
-                                                                    <input
-                                                                        type="time"
+                                                                    <TimeInput12
                                                                         disabled={isWriteDisabled || isLeave}
                                                                         value={formatISOToLocalTime(record?.lunch_out || null)}
-                                                                        onChange={e => updateRecordLocal(s.id, 'lunch_out', e.target.value)}
-                                                                        className="w-full bg-slate-950 border border-rose-900/30 rounded-lg p-1.5 text-[11px] text-white outline-none focus:border-rose-500 disabled:opacity-50"
+                                                                        onChange={val => updateRecordLocal(s.id, 'lunch_out', val)}
+                                                                        className="w-full"
                                                                     />
                                                                 </div>
                                                                 <div className="space-y-1">
                                                                     <label className="text-[7px] font-black text-emerald-400 uppercase tracking-widest">Lunch In</label>
-                                                                    <input
-                                                                        type="time"
+                                                                    <TimeInput12
                                                                         disabled={isWriteDisabled || isLeave}
                                                                         value={formatISOToLocalTime(record?.lunch_in || null)}
-                                                                        onChange={e => updateRecordLocal(s.id, 'lunch_in', e.target.value)}
-                                                                        className="w-full bg-slate-950 border border-emerald-900/30 rounded-lg p-1.5 text-[11px] text-white outline-none focus:border-emerald-500 disabled:opacity-50"
+                                                                        onChange={val => updateRecordLocal(s.id, 'lunch_in', val)}
+                                                                        className="w-full"
                                                                     />
                                                                 </div>
                                                             </div>
@@ -709,7 +972,7 @@ export default function AttendanceManagement() {
                                             </div>
                                         </div>
 
-                                        {incident.status === 'PENDING' && canApproveCorrection && (
+                                        {incident.status === 'PENDING' && canManageAttendance && (
                                             <div className="flex items-center gap-3">
                                                 <button
                                                     onClick={async () => {
@@ -790,7 +1053,7 @@ export default function AttendanceManagement() {
                                             </div>
                                         </div>
 
-                                        {['SUBMITTED', 'MANAGER_REVIEW'].includes(corr.status) && (
+                                        {['SUBMITTED', 'MANAGER_REVIEW'].includes(corr.status) && (canManageAttendance || canApproveCorrection) && (
                                             <div className="flex items-center gap-3">
                                                 <button
                                                     onClick={async () => {
@@ -899,6 +1162,25 @@ export default function AttendanceManagement() {
                                     </div>
 
                                     <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                                            <div className="surface-card p-6 border border-rose-500/20 bg-rose-500/5 rounded-2xl flex flex-col justify-center transform hover:scale-105 hover:border-rose-500/40 transition-all duration-300 shadow-xl shadow-rose-500/5">
+                                                <div className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-1">Total Late</div>
+                                                <div className="text-4xl font-display font-black text-rose-400">{profileMetrics.late}<span className="text-xs text-rose-500/50 uppercase ml-2 tracking-widest font-bold">mins</span></div>
+                                            </div>
+                                            <div className="surface-card p-6 border border-orange-500/20 bg-orange-500/5 rounded-2xl flex flex-col justify-center transform hover:scale-105 hover:border-orange-500/40 transition-all duration-300 shadow-xl shadow-orange-500/5">
+                                                <div className="text-[10px] font-black text-orange-500 uppercase tracking-widest mb-1">Total Early Out</div>
+                                                <div className="text-4xl font-display font-black text-orange-400">{profileMetrics.early}<span className="text-xs text-orange-500/50 uppercase ml-2 tracking-widest font-bold">mins</span></div>
+                                            </div>
+                                            <div className="surface-card p-6 border border-amber-500/20 bg-amber-500/5 rounded-2xl flex flex-col justify-center transform hover:scale-105 hover:border-amber-500/40 transition-all duration-300 shadow-xl shadow-amber-500/5">
+                                                <div className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-1">Excess Break</div>
+                                                <div className="text-4xl font-display font-black text-amber-400">{profileMetrics.overBreak}<span className="text-xs text-amber-500/50 uppercase ml-2 tracking-widest font-bold">mins</span></div>
+                                            </div>
+                                            <div className="surface-card p-6 border border-emerald-500/20 bg-emerald-500/5 rounded-2xl flex flex-col justify-center transform hover:scale-105 hover:border-emerald-500/40 transition-all duration-300 shadow-xl shadow-emerald-500/5">
+                                                <div className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Over Time</div>
+                                                <div className="text-4xl font-display font-black text-emerald-400">{profileMetrics.overTime}<span className="text-xs text-emerald-500/50 uppercase ml-2 tracking-widest font-bold">mins</span></div>
+                                            </div>
+                                        </div>
+
                                         <div className="grid grid-cols-1 gap-4">
                                             {historyRecords.length === 0 ? (
                                                 <div className="surface-card py-20 text-center border-dashed border-slate-800">
@@ -922,10 +1204,34 @@ export default function AttendanceManagement() {
                                                             {historyRecords.map((hr, idx) => (
                                                                 <tr key={`${hr.attendance_date}-${idx}`} className="border-b border-slate-800/50">
                                                                     <td className="px-6 py-4 text-[10px] font-bold text-slate-300">{hr.attendance_date}</td>
-                                                                    <td className="px-6 py-4 text-[10px] text-white">{hr.punch_in || '--:--'}</td>
-                                                                    <td className="px-6 py-4 text-[10px] text-rose-400">{hr.lunch_out || '--:--'}</td>
-                                                                    <td className="px-6 py-4 text-[10px] text-emerald-400">{hr.lunch_in || '--:--'}</td>
-                                                                    <td className="px-6 py-4 text-[10px] text-white">{hr.punch_out || '--:--'}</td>
+                                                                    <td className="px-6 py-4 text-[10px] text-white">
+                                                                        {hr.punch_in ? (() => {
+                                                                            if (hr.punch_in.includes('T')) return new Date(hr.punch_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+                                                                            const d = new Date(`${hr.attendance_date}T${hr.punch_in}Z`);
+                                                                            return !isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true }) : hr.punch_in;
+                                                                        })() : '--:--'}
+                                                                    </td>
+                                                                    <td className="px-6 py-4 text-[10px] text-rose-400">
+                                                                        {hr.lunch_out ? (() => {
+                                                                            if (hr.lunch_out.includes('T')) return new Date(hr.lunch_out).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+                                                                            const d = new Date(`${hr.attendance_date}T${hr.lunch_out}Z`);
+                                                                            return !isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true }) : hr.lunch_out;
+                                                                        })() : '--:--'}
+                                                                    </td>
+                                                                    <td className="px-6 py-4 text-[10px] text-emerald-400">
+                                                                        {hr.lunch_in ? (() => {
+                                                                            if (hr.lunch_in.includes('T')) return new Date(hr.lunch_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+                                                                            const d = new Date(`${hr.attendance_date}T${hr.lunch_in}Z`);
+                                                                            return !isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true }) : hr.lunch_in;
+                                                                        })() : '--:--'}
+                                                                    </td>
+                                                                    <td className="px-6 py-4 text-[10px] text-white">
+                                                                        {hr.punch_out ? (() => {
+                                                                            if (hr.punch_out.includes('T')) return new Date(hr.punch_out).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+                                                                            const d = new Date(`${hr.attendance_date}T${hr.punch_out}Z`);
+                                                                            return !isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true }) : hr.punch_out;
+                                                                        })() : '--:--'}
+                                                                    </td>
                                                                     <td className="px-6 py-4">
                                                                         <span className={`px-3 py-1 rounded-full text-[8px] font-black uppercase ${hr.status === 'PRESENT' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
                                                                             {hr.status}
@@ -1122,8 +1428,8 @@ export default function AttendanceManagement() {
                                 <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Grace In (Mins)</label>
                                 <input
                                     type="number"
-                                    value={editingShift?.grace_in_minutes === undefined || editingShift.grace_in_minutes === 0 ? '' : editingShift.grace_in_minutes}
-                                    onChange={e => setEditingShift({ ...editingShift, grace_in_minutes: e.target.value === '' ? 0 : parseInt(e.target.value) })}
+                                    value={editingShift?.grace_in_minutes === undefined || editingShift?.grace_in_minutes === 0 ? '' : editingShift?.grace_in_minutes}
+                                    onChange={e => setEditingShift(prev => prev ? { ...prev, grace_in_minutes: e.target.value === '' ? 0 : parseInt(e.target.value) } : null)}
                                     className="input-base"
                                     placeholder="0"
                                 />
@@ -1133,32 +1439,20 @@ export default function AttendanceManagement() {
                                 <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Grace Out (Mins)</label>
                                 <input
                                     type="number"
-                                    value={editingShift?.grace_out_minutes === undefined || editingShift.grace_out_minutes === 0 ? '' : editingShift.grace_out_minutes}
-                                    onChange={e => setEditingShift({ ...editingShift, grace_out_minutes: e.target.value === '' ? 0 : parseInt(e.target.value) })}
+                                    value={editingShift?.grace_out_minutes === undefined || editingShift?.grace_out_minutes === 0 ? '' : editingShift?.grace_out_minutes}
+                                    onChange={e => setEditingShift(prev => prev ? { ...prev, grace_out_minutes: e.target.value === '' ? 0 : parseInt(e.target.value) } : null)}
                                     className="input-base"
                                     placeholder="0"
                                 />
                             </div>
 
-                            <div className="space-y-2">
-                                <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Workday Boundary Start</label>
-                                <input
-                                    type="time"
-                                    value={editingShift?.boundary_start_time || '06:00'}
-                                    onChange={e => setEditingShift({ ...editingShift, boundary_start_time: e.target.value })}
-                                    className="input-base"
-                                />
-                                <p className="text-[7px] text-slate-600 uppercase font-black tracking-tighter mt-1 italic">
-                                    Punches after this time belong to the new attendance date.
-                                </p>
-                            </div>
 
                             <div className="space-y-2">
                                 <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Break Duration (Mins)</label>
                                 <input
                                     type="number"
-                                    value={editingShift?.break_duration_minutes === undefined || editingShift.break_duration_minutes === 0 ? '' : editingShift.break_duration_minutes}
-                                    onChange={e => setEditingShift({ ...editingShift, break_duration_minutes: e.target.value === '' ? 0 : parseInt(e.target.value) })}
+                                    value={editingShift?.break_duration_minutes === undefined || editingShift?.break_duration_minutes === 0 ? '' : editingShift?.break_duration_minutes}
+                                    onChange={e => setEditingShift(prev => prev ? { ...prev, break_duration_minutes: e.target.value === '' ? 0 : parseInt(e.target.value) } : null)}
                                     className="input-base"
                                     placeholder="0"
                                 />
@@ -1169,7 +1463,7 @@ export default function AttendanceManagement() {
                                     <input
                                         type="checkbox"
                                         checked={editingShift?.is_active ?? true}
-                                        onChange={e => setEditingShift({ ...editingShift, is_active: e.target.checked })}
+                                        onChange={e => setEditingShift(prev => prev ? { ...prev, is_active: e.target.checked } : null)}
                                         className="sr-only"
                                     />
                                     <div className={`w-10 h-5 rounded-full p-1 transition-colors ${editingShift?.is_active ?? true ? 'bg-brand-500' : 'bg-slate-800'}`}>
@@ -1230,7 +1524,17 @@ export default function AttendanceManagement() {
                             <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block">Adjustment Reason (Mandatory)</label>
                             <textarea value={correctionReason} onChange={e => setCorrectionReason(e.target.value)} placeholder="Explain why this change is needed..." className="w-full bg-slate-900 border border-slate-800 rounded-xl p-4 text-xs text-white h-32 outline-none focus:ring-1 focus:ring-brand-500" />
                         </div>
-                        <button onClick={() => correctionModal && updateRecordLocal(correctionModal.staffId, correctionModal.field, correctionModal.value, correctionReason)} disabled={!correctionReason.trim()} className="w-full btn-primary !py-3 disabled:opacity-50">Save Correction</button>
+                        <button
+                            onClick={async () => {
+                                if (!correctionModal || !correctionReason.trim()) return;
+                                await submitCorrection(correctionModal.staffId, correctionModal.field as string, correctionModal.value, correctionReason);
+                                setCorrectionModal(null);
+                            }}
+                            disabled={!correctionReason.trim()}
+                            className="w-full btn-primary !py-3 disabled:opacity-50"
+                        >
+                            Save Correction
+                        </button>
                     </div>
                 </div>
             )}
