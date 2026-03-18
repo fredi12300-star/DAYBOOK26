@@ -3617,7 +3617,11 @@ DROP POLICY IF EXISTS "RLS: staff_salary ALL" ON public.staff_salary;
 CREATE POLICY "RLS: staff_salary ALL"
 ON public.staff_salary
 FOR ALL TO authenticated
-USING (public.has_permission('staff_mgmt','view') OR public.get_is_super_admin())
+USING (
+    public.has_permission('staff_mgmt','view') 
+    OR public.get_is_super_admin()
+    OR staff_id IN (SELECT staff_id FROM public.user_profiles WHERE id = auth.uid())
+)
 WITH CHECK (public.has_permission('staff_mgmt','manage_staff') OR public.get_is_super_admin());
 
 
@@ -4457,22 +4461,22 @@ BEGIN
     RETURN QUERY
     WITH raw_ordered AS (
         SELECT 
-            id, 
-            event_timestamp, 
-            event_type,
-            ROW_NUMBER() OVER (PARTITION BY event_timestamp, event_type ORDER BY created_at ASC) as tie_breaker
-        FROM public.raw_attendance_events
-        WHERE staff_id = p_staff_id
-          AND event_timestamp >= v_window_start
-          AND event_timestamp < v_window_end
+            rae.id, 
+            rae.event_timestamp, 
+            rae.event_type,
+            ROW_NUMBER() OVER (PARTITION BY rae.event_timestamp, rae.event_type ORDER BY rae.created_at ASC) as tie_breaker
+        FROM public.raw_attendance_events rae
+        WHERE rae.staff_id = p_staff_id
+          AND rae.event_timestamp >= v_window_start
+          AND rae.event_timestamp < v_window_end
     )
     SELECT 
-        id as event_id,
+        raw_ordered.id as event_id,
         raw_ordered.event_timestamp,
         raw_ordered.event_type,
         ROW_NUMBER() OVER (ORDER BY raw_ordered.event_timestamp ASC, raw_ordered.event_type ASC) as event_rank
     FROM raw_ordered
-    WHERE tie_breaker = 1;
+    WHERE raw_ordered.tie_breaker = 1;
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
@@ -4692,13 +4696,13 @@ BEGIN
 
     IF v_manual_exists THEN
         v_final_status := v_manual_status;
-        v_anomalies := v_anomalies || 'MANUAL_OVERRIDE';
+        v_anomalies := v_anomalies || ARRAY['MANUAL_OVERRIDE'];
     ELSIF v_leave_exists THEN
         v_final_status := 'LEAVE';
-        v_anomalies := v_anomalies || 'LEAVE_OVERLAY';
+        v_anomalies := v_anomalies || ARRAY['LEAVE_OVERLAY'];
     ELSIF v_holiday_exists THEN
         v_final_status := 'HOLIDAY';
-        v_anomalies := v_anomalies || 'HOLIDAY_OVERLAY';
+        v_anomalies := v_anomalies || ARRAY['HOLIDAY_OVERLAY'];
     END IF;
 
     -- 3. Stage 10: Persistence
@@ -4988,6 +4992,8 @@ CREATE TABLE IF NOT EXISTS public.attendance_summaries (
     assignment_id UUID REFERENCES public.shift_assignments(id),
 
     -- Audit & Integrity
+    raw_punch_in TIMESTAMPTZ,
+    raw_punch_out TIMESTAMPTZ,
     anomaly_flags TEXT[] DEFAULT '{}',
     compute_metadata JSONB DEFAULT '{}'::jsonb,
     is_locked BOOLEAN DEFAULT FALSE,
@@ -5095,6 +5101,8 @@ CREATE INDEX IF NOT EXISTS idx_corrections_status ON public.attendance_correctio
 -- 5) BACKFILL / HARDEN attendance_summaries COLUMNS (idempotent)
 -- ================================================================
 ALTER TABLE public.attendance_summaries
+    ADD COLUMN IF NOT EXISTS raw_punch_in TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS raw_punch_out TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS applied_incident_id UUID REFERENCES public.attendance_incidents(id) ON DELETE SET NULL,
     ADD COLUMN IF NOT EXISTS excused_late_minutes INTEGER DEFAULT 0,
     ADD COLUMN IF NOT EXISTS excused_early_out_minutes INTEGER DEFAULT 0,
@@ -5138,22 +5146,22 @@ BEGIN
     RETURN QUERY
     WITH raw_ordered AS (
         SELECT
-            id,
-            event_timestamp,
-            event_type,
-            ROW_NUMBER() OVER (PARTITION BY event_timestamp, event_type ORDER BY created_at ASC) AS tie_breaker
-        FROM public.raw_attendance_events
-        WHERE staff_id = p_staff_id
-          AND event_timestamp >= v_window_start
-          AND event_timestamp < v_window_end
+            rae.id,
+            rae.event_timestamp,
+            rae.event_type,
+            ROW_NUMBER() OVER (PARTITION BY rae.event_timestamp, rae.event_type ORDER BY rae.created_at ASC) AS tie_breaker
+        FROM public.raw_attendance_events rae
+        WHERE rae.staff_id = p_staff_id
+          AND rae.event_timestamp >= v_window_start
+          AND rae.event_timestamp < v_window_end
     )
     SELECT
-        id AS event_id,
+        raw_ordered.id AS event_id,
         raw_ordered.event_timestamp,
         raw_ordered.event_type,
         ROW_NUMBER() OVER (ORDER BY raw_ordered.event_timestamp ASC, raw_ordered.event_type ASC) AS event_rank
     FROM raw_ordered
-    WHERE tie_breaker = 1;
+    WHERE raw_ordered.tie_breaker = 1;
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
@@ -6608,6 +6616,7 @@ FOR ALL TO authenticated
 USING (
     public.has_permission('staff_mgmt','view') 
     OR public.is_staff_posting_eligible(id)
+    OR id IN (SELECT staff_id FROM public.user_profiles WHERE id = auth.uid())
 )
 WITH CHECK (public.has_permission('staff_mgmt','manage_staff') OR public.get_is_super_admin());
 
@@ -7476,13 +7485,13 @@ BEGIN
 
     IF v_manual_exists THEN
         v_final_status := v_manual_status;
-        v_anomalies := v_anomalies || 'MANUAL_OVERRIDE';
+        v_anomalies := v_anomalies || ARRAY['MANUAL_OVERRIDE'];
     ELSIF v_leave_exists THEN
         v_final_status := 'LEAVE';
-        v_anomalies := v_anomalies || 'LEAVE_OVERLAY';
+        v_anomalies := v_anomalies || ARRAY['LEAVE_OVERLAY'];
     ELSIF v_holiday_exists THEN
         v_final_status := 'HOLIDAY';
-        v_anomalies := v_anomalies || 'HOLIDAY_OVERLAY';
+        v_anomalies := v_anomalies || ARRAY['HOLIDAY_OVERLAY'];
     END IF;
 
     -- NEW: Stage 11: Correction Impact Override
@@ -7500,7 +7509,7 @@ BEGIN
             v_net_mins := (v_corr.proposed_impact->>'worked_minutes_net')::integer;
         END IF;
         
-        v_anomalies := v_anomalies || 'WORKFLOW_CORRECTION_APPLIED';
+        v_anomalies := v_anomalies || ARRAY['WORKFLOW_CORRECTION_APPLIED'];
     END IF;
 
     -- NEW: Stage 12: Incident Impact Override (e.g. Excused Late)
@@ -7521,7 +7530,7 @@ BEGIN
                 END IF;
             END IF;
         END IF;
-        v_anomalies := v_anomalies || 'WORKFLOW_INCIDENT_APPLIED';
+        v_anomalies := v_anomalies || ARRAY['WORKFLOW_INCIDENT_APPLIED'];
     END IF;
 
     -- Check if any correction is still pending for the badge

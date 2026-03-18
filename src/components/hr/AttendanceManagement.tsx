@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
     Users,
     CheckCircle2,
@@ -466,6 +466,20 @@ export default function AttendanceManagement() {
                 const exists = prev.find(r => r.staff_id === staffId);
                 const updatedFields: any = { [field]: finalValue };
 
+                // Phase 12: Auto-status inference
+                if (field === 'punch_in' || field === 'punch_out') {
+                    const currentIn = field === 'punch_in' ? finalValue : exists?.punch_in;
+                    const currentOut = field === 'punch_out' ? finalValue : exists?.punch_out;
+
+                    if (currentIn && currentOut) {
+                        updatedFields.status = 'PRESENT';
+                    } else if (currentIn || currentOut) {
+                        updatedFields.status = 'MISS_PUNCH';
+                    } else {
+                        updatedFields.status = 'ABSENT';
+                    }
+                }
+
                 // If a reason is provided (passed from the UI), attach it to the local state
                 if (reason !== undefined) {
                     updatedFields.correction_reason = reason;
@@ -530,7 +544,12 @@ export default function AttendanceManagement() {
             leave: filteredLeaveDays.length,
             missPunch: filteredRecords.filter(r => r.status === 'MISS_PUNCH').length,
             incidents: filteredIncidents.filter(i => i.status === 'PENDING').length,
-            corrections: filteredCorrections.filter(c => c.status === 'SUBMITTED' || c.status === 'MANAGER_REVIEW').length
+            corrections: filteredCorrections.filter(c => c.status === 'SUBMITTED' || c.status === 'MANAGER_REVIEW').length,
+            aggregatedLateMinutes: filteredRecords.reduce((acc, r) => acc + (r.late_minutes || 0), 0),
+            hasMissingTimes: filteredRecords.some(r =>
+                ['PRESENT', 'HALF_DAY', 'LATE_PRESENT', 'EARLY_OUT', 'MISS_PUNCH', 'ON_DUTY'].includes(r.status) &&
+                (!r.punch_in || !r.punch_out)
+            )
         };
     }, [staff, records, incidents, leaveDays, corrections, selectedShiftGroupId]);
 
@@ -697,10 +716,11 @@ export default function AttendanceManagement() {
                             {canManageAttendance && (
                                 <button
                                     onClick={() => setIsIncidentModalOpen(true)}
-                                    disabled={isWriteDisabled}
+                                    disabled={isWriteDisabled || stats.hasMissingTimes}
                                     className="flex items-center justify-center gap-2 px-5 py-2.5 bg-rose-500/10 text-rose-500 border border-rose-500/20 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all ml-auto disabled:opacity-50 disabled:hover:bg-rose-500/10 disabled:hover:text-rose-500 mt-0"
+                                    title={stats.hasMissingTimes ? 'Complete all punch times in the muster roll before reporting an incident' : ''}
                                 >
-                                    <ShieldAlert className="w-4 h-4" /> {isWriteDisabled ? 'Locked' : 'Report Incident'}
+                                    <ShieldAlert className="w-4 h-4" /> {isWriteDisabled ? 'Locked' : stats.hasMissingTimes ? 'Times Incomplete' : 'Report Incident'}
                                 </button>
                             )}
                             {canManageAttendance && (
@@ -1629,7 +1649,13 @@ export default function AttendanceManagement() {
                 </div>
             )}
 
-            <DelayIncidentModal isOpen={isIncidentModalOpen} onClose={() => setIsIncidentModalOpen(false)} onSuccess={loadData} currentDate={selectedDate} />
+            <DelayIncidentModal
+                isOpen={isIncidentModalOpen}
+                onClose={() => setIsIncidentModalOpen(false)}
+                onSuccess={() => loadData()}
+                currentDate={selectedDate || ''}
+                suggestedMins={stats.aggregatedLateMinutes}
+            />
 
             {correctionModal && (
                 <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">

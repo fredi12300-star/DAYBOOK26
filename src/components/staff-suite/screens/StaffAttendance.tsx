@@ -212,73 +212,89 @@ export default function StaffAttendance({ staff }: StaffAttendanceProps) {
                     <Search size={12} />
                 </h3>
 
-                {isLoading ? (
-                    <div className="py-10 flex justify-center">
-                        <div className="w-6 h-6 border-2 border-brand-500/20 border-t-brand-500 rounded-full animate-spin" />
-                    </div>
-                ) : history.length === 0 ? (
-                    <div className="py-10 text-center bg-slate-800/20 rounded-3xl border border-dashed border-slate-800">
-                        <CalendarIcon size={24} className="mx-auto text-slate-700 mb-3" />
-                        <p className="text-xs font-bold text-slate-500">No records for this month</p>
-                    </div>
-                ) : (
-                    <div className="space-y-3">
-                        {history.map((record) => (
-                            <div
-                                key={record.attendance_date}
-                                className="bg-[#0f172a]/50 p-4 rounded-3xl border border-slate-800/50 flex items-center justify-between group active:scale-[0.98] transition-all"
-                            >
-                                <div className="flex items-center gap-4">
-                                    <div className="text-center min-w-[40px]">
-                                        <p className="text-[10px] font-black text-slate-500 uppercase">
-                                            {parseLocalDate(record.attendance_date).toLocaleString('default', { weekday: 'short' })}
-                                        </p>
-                                        <p className="text-lg font-black text-white">
-                                            {parseLocalDate(record.attendance_date).getDate()}
-                                        </p>
-                                    </div>
-                                    <div className="h-8 w-px bg-slate-800" />
-                                    <div>
-                                        <div className="flex items-center gap-2 mb-1">
-                                            <span className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest border ${getStatusColor(record.status)}`}>
-                                                {record.status.replace('_', ' ')}
-                                            </span>
-                                            {record.late_minutes > 0 && (
-                                                <span className="flex items-center gap-1 text-[8px] font-bold text-amber-500">
-                                                    <AlertCircle size={10} /> {record.late_minutes}m Late
-                                                </span>
-                                            )}
-                                        </div>
-                                        <div className="flex flex-col gap-1.5 mt-2">
-                                            <div className="flex items-center gap-3 text-[10px] font-bold text-slate-300">
-                                                <span className="flex items-center gap-1 w-[45px] text-slate-500 uppercase tracking-widest text-[8px]">
-                                                    <Clock size={10} className="text-emerald-400" /> Shift
-                                                </span>
-                                                <span className="text-white bg-slate-800/50 px-2 py-0.5 rounded">{formatTime(record.punch_in, record.attendance_date)}</span>
-                                                <span className="text-slate-600">-</span>
-                                                <span className="text-white bg-slate-800/50 px-2 py-0.5 rounded">{formatTime(record.punch_out, record.attendance_date)}</span>
-                                            </div>
-                                            {(record.lunch_out || record.lunch_in) && (
-                                                <div className="flex items-center gap-3 text-[10px] font-bold text-slate-400">
-                                                    <span className="flex items-center gap-1 w-[45px] text-slate-500 uppercase tracking-widest text-[8px]">
-                                                        <Clock size={10} className="text-amber-400" /> Break
-                                                    </span>
-                                                    <span className="text-rose-300 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">{formatTime(record.lunch_out, record.attendance_date)}</span>
-                                                    <span className="text-slate-600">-</span>
-                                                    <span className="text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">{formatTime(record.lunch_in, record.attendance_date)}</span>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <button className="p-2 opacity-0 group-hover:opacity-100 bg-slate-800 rounded-xl border border-slate-700 transition-all">
-                                    <AlertCircle size={14} className="text-slate-400" />
-                                </button>
+                {(() => {
+                    if (isLoading) {
+                        return (
+                            <div className="py-10 flex justify-center">
+                                <div className="w-6 h-6 border-2 border-brand-500/20 border-t-brand-500 rounded-full animate-spin" />
                             </div>
-                        ))}
-                    </div>
-                )}
+                        );
+                    }
+
+                    const filteredHistory = history.filter(record => {
+                        if (record.punch_in || record.punch_out) return true;
+                        if (record.status === 'LEAVE' || record.status === 'HOLIDAY' || record.status === 'HALF_DAY') return true;
+                        return false;
+                    });
+
+                    if (filteredHistory.length === 0) {
+                        return (
+                            <div className="py-10 text-center bg-slate-800/20 rounded-3xl border border-dashed border-slate-800">
+                                <CalendarIcon size={24} className="mx-auto text-slate-700 mb-3" />
+                                <p className="text-xs font-bold text-slate-500">No records to show for this month</p>
+                            </div>
+                        );
+                    }
+
+                    return (
+                        <div className="space-y-3">
+                            {filteredHistory.map((record) => (
+                                <div
+                                    key={record.attendance_date}
+                                    className="bg-[#0f172a]/50 p-4 rounded-3xl border border-slate-800/50 flex items-center justify-between group active:scale-[0.98] transition-all"
+                                >
+                                    <div className="flex items-center gap-4">
+                                        <div className="text-center min-w-[40px]">
+                                            <p className="text-[10px] font-black text-slate-500 uppercase">
+                                                {parseLocalDate(record.attendance_date).toLocaleString('default', { weekday: 'short' })}
+                                            </p>
+                                            <p className="text-lg font-black text-white">
+                                                {parseLocalDate(record.attendance_date).getDate()}
+                                            </p>
+                                        </div>
+                                        <div className="h-8 w-px bg-slate-800" />
+                                        <div>
+                                            <div className="flex items-center gap-2 mb-1">
+                                                <span className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest border ${getStatusColor(record.status)}`}>
+                                                    {record.status.replace('_', ' ')}
+                                                </span>
+                                                {record.late_minutes > 0 && (
+                                                    <span className="flex items-center gap-1 text-[8px] font-bold text-amber-500">
+                                                        <AlertCircle size={10} /> {record.late_minutes}m Late
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <div className="flex flex-col gap-1.5 mt-2">
+                                                <div className="flex items-center gap-3 text-[10px] font-bold text-slate-300">
+                                                    <span className="flex items-center gap-1 w-[45px] text-slate-500 uppercase tracking-widest text-[8px]">
+                                                        <Clock size={10} className="text-emerald-400" /> Shift
+                                                    </span>
+                                                    <span className="text-white bg-slate-800/50 px-2 py-0.5 rounded">{formatTime(record.punch_in, record.attendance_date)}</span>
+                                                    <span className="text-slate-600">-</span>
+                                                    <span className="text-white bg-slate-800/50 px-2 py-0.5 rounded">{formatTime(record.punch_out, record.attendance_date)}</span>
+                                                </div>
+                                                {(record.lunch_out || record.lunch_in) && (
+                                                    <div className="flex items-center gap-3 text-[10px] font-bold text-slate-400">
+                                                        <span className="flex items-center gap-1 w-[45px] text-slate-500 uppercase tracking-widest text-[8px]">
+                                                            <Clock size={10} className="text-amber-400" /> Break
+                                                        </span>
+                                                        <span className="text-rose-300 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">{formatTime(record.lunch_out, record.attendance_date)}</span>
+                                                        <span className="text-slate-600">-</span>
+                                                        <span className="text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">{formatTime(record.lunch_in, record.attendance_date)}</span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <button className="p-2 opacity-0 group-hover:opacity-100 bg-slate-800 rounded-xl border border-slate-700 transition-all">
+                                        <AlertCircle size={14} className="text-slate-400" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    );
+                })()}
             </div>
         </div>
     );

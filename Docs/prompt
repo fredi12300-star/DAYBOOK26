@@ -1,0 +1,81 @@
+You are working inside an existing production-style repo called Universal Day Book.
+
+This is a full-stack change request. I do not want frontend-only or backend-only output. I want the complete implementation for both sides at the same time, aligned to the current repo structure and coding style.
+
+Project architecture you must follow:
+- Frontend: Vite + React + TypeScript + Tailwind
+- Backend: Supabase Postgres SQL, RPC functions, RLS policies, triggers
+- There is no separate Express/Nest backend
+- Database changes belong in `database/migrations/supbase.sql` exactly as named
+- Shared types belong in `src/types/accounting.ts`
+- Supabase client queries/RPC wrappers belong in `src/lib/supabase.ts`
+- UI/pages/components belong under `src/components/**`
+- App-level navigation/wiring belongs in `src/App.tsx` when needed
+- Auth/permissions follow existing `has_permission(...)`, `get_is_super_admin()`, `useAuth()`, RLS, and role-based patterns
+
+Change request:
+[DESCRIBE THE CHANGE CLEARLY]
+
+Business goal:
+[WHAT THE USER SHOULD BE ABLE TO DO AFTER THE CHANGE]
+
+Expected behavior:
+[LIST THE MAIN USER FLOWS]
+
+Rules and constraints:
+[VALIDATIONS, PERMISSIONS, EDGE CASES, REPORTING IMPACT, APPROVAL IMPACT, ETC.]
+
+Relevant module or screen:
+[DAYBOOK / LEDGERS / PARTIES / BANK / HR / STAFF / LEAVE / ATTENDANCE / PAYROLL / SETTINGS / OTHER]
+
+What you must do:
+1. First analyze the change across database schema, RPCs, TS types, Supabase wrappers, and UI.
+2. Then implement the full backend and frontend solution together.
+3. If the change needs DB work, include:
+   - tables / columns / constraints
+   - indexes
+   - triggers
+   - functions / RPCs
+   - RLS / policies
+   - seed or backfill logic only if required
+4. If the change needs frontend work, include:
+   - updated TypeScript interfaces/types
+   - Supabase fetch/save/RPC functions
+   - component/page updates
+   - form fields
+   - tables/lists/filters
+   - loading, error, and success states
+   - navigation wiring if a new page/tab is added
+5. Keep everything consistent with the existing repo patterns. Do not invent a new architecture.
+6. If a backend signature changes, update every affected frontend caller.
+7. If a new field is added, update all related types, queries, forms, display tables, validation, and save flows.
+8. If the change affects reports, approvals, attendance, leave, payroll, or reconciliation, update downstream dependencies too.
+9. Do not give pseudo-code. Give production-ready code.
+10. Do not rewrite unrelated parts of the repo.
+
+Important SQL rules:
+- Make SQL idempotent
+- Use `CREATE ... IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, `DROP ... IF EXISTS`, guarded `DO $$ ... $$`, and safe `ON CONFLICT` patterns where appropriate
+- Do not rewrite the entire migration file unless absolutely necessary
+- Prefer minimal targeted additions/patches to `database/migrations/supbase.sql`
+
+Output format:
+- Impact summary
+- Files to change
+- Backend changes
+- Frontend changes
+- For each touched file, provide the exact code or a precise patch
+- Migration notes
+- Manual steps
+- Smoke tests
+
+Non-negotiable:
+- No partial solution
+- No high-level advice without code
+- No generic sample code disconnected from this repo
+- No new backend framework
+- No unnecessary refactors
+- Preserve existing naming/style unless the change requires otherwise
+
+Now implement this end-to-end change:
+

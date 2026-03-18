@@ -159,6 +159,25 @@ const StaffManagement: React.FC = () => {
             return;
         }
 
+        const email = (formData.get('email') as string)?.trim() || null;
+
+        // Client-side pre-save validation for duplicate email
+        if (email) {
+            const isDuplicate = staff.some(s =>
+                s.email?.toLowerCase() === email.toLowerCase() &&
+                s.id !== editingStaff?.id
+            );
+            if (isDuplicate) {
+                setStaffModalTab('IDENTITY');
+                setTimeout(() => {
+                    const el = document.getElementsByName('email')[0];
+                    el?.focus();
+                    alert(`The email "${email}" is already assigned to another staff member. Please use a unique email protocol.`);
+                }, 100);
+                return;
+            }
+        }
+
         const staffData: Partial<StaffMaster> = {
             id: editingStaff?.id,
             staff_code: editingStaff?.staff_code || `EMP-${Math.floor(100000 + Math.random() * 900000)}`,
@@ -171,7 +190,7 @@ const StaffManagement: React.FC = () => {
             marital_status: (formData.get('marital_status') as any) || editingStaff?.marital_status || null,
             primary_mobile: primary_mobile || editingStaff?.primary_mobile || '',
             secondary_mobile: (formData.get('secondary_mobile') as string) || editingStaff?.secondary_mobile || null,
-            email: (formData.get('email') as string) || editingStaff?.email || null,
+            email: email,
             permanent_address: (formData.get('permanent_address') as string) || editingStaff?.permanent_address || null,
             current_address: (formData.get('current_address') as string) || editingStaff?.current_address || null,
 
@@ -183,7 +202,7 @@ const StaffManagement: React.FC = () => {
             doj: (formData.get('doj') as string) || editingStaff?.doj || null,
             employment_type: (formData.get('employment_type') as any) || editingStaff?.employment_type || null,
 
-            // Compliance Tab (checkboxes don't submit if unchecked or hidden, must default to current state if editing)
+            // Compliance Tab
             offer_letter_collected: formData.has('offer_letter_collected') ? formData.get('offer_letter_collected') === 'on' : (editingStaff?.offer_letter_collected || false),
             id_proof_collected: formData.has('id_proof_collected') ? formData.get('id_proof_collected') === 'on' : (editingStaff?.id_proof_collected || false),
             address_proof_collected: formData.has('address_proof_collected') ? formData.get('address_proof_collected') === 'on' : (editingStaff?.address_proof_collected || false),
@@ -200,8 +219,13 @@ const StaffManagement: React.FC = () => {
             setEditingStaff(null);
             setStaffModalTab('IDENTITY');
             loadData();
-        } catch (error) {
-            alert('Error saving staff profile');
+        } catch (error: any) {
+            console.error('Staff save error:', error);
+            if (error.code === '23505') {
+                alert('Conflict detected: A staff member with this identity (Email or Staff Code) already exists in the registry.');
+            } else {
+                alert('Error saving staff profile: ' + (error.message || 'Unknown protocol failure.'));
+            }
         }
     };
 
@@ -1008,7 +1032,9 @@ const StaffManagement: React.FC = () => {
                                 const assignedProfile = userProfiles.find(p => p.id === assignedAccess?.user_id);
                                 const assignedStaffData = staff.find(s => s.id === assignedProfile?.staff_id);
 
-                                const displayStaff = isRoleFilled && assignedStaffData ? [assignedStaffData] : staff;
+                                const displayStaff = isRoleFilled && assignedStaffData
+                                    ? [assignedStaffData]
+                                    : staff.filter(s => s.is_active !== false && userProfiles.some(p => p.staff_id === s.id));
 
                                 if (displayStaff.length === 0) {
                                     return (

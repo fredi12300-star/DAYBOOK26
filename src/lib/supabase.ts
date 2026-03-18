@@ -39,8 +39,14 @@ export async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 10
         // PGRST116: maybeSingle() found no rows (transient in some high-concurrency cases)
         // 5xx: Server/Supabase outage
         // 429: Rate limit
-        // We EXCLUDE 42xxx (syntax/schema) and P0001 (custom business logic raised exception)
-        const isPermanentDBError = error.code && (error.code.startsWith('42') || error.code === 'P0001');
+        // 23505: Unique constraint violation (Permanent)
+        // 42xxx: Syntax/schema (Permanent)
+        // P0001: custom business logic (Permanent)
+        const isPermanentDBError = error.code && (
+            error.code.startsWith('42') ||
+            error.code === 'P0001' ||
+            error.code === '23505'
+        );
         const isTransientError = !isPermanentDBError && (error.code === 'PGRST116' || !error.status || error.status >= 500 || error.status === 429);
 
         if (isNetworkError || isTransientError) {
@@ -3272,31 +3278,13 @@ export async function getEffectiveShift(staffId: string, date: string) {
 export async function fetchAttendanceRecords(date: string) {
     const { data: recordsData, error: recError } = await supabase
         .from('attendance_records')
-        .select(`
-            *,
-            summary:attendance_summaries (
-                primary_status,
-                raw_punch_in,
-                raw_punch_out,
-                has_pending_correction,
-                late_minutes,
-                early_out_minutes,
-                worked_minutes_net
-            )
-        `)
+        .select('*')
         .eq('attendance_date', date);
     if (recError) throw recError;
 
-    // Flatten the summary fields into the record for the UI
     return (recordsData || []).map((r: any) => ({
         ...r,
-        status: r.summary?.[0]?.primary_status || r.status,
-        raw_punch_in: r.summary?.[0]?.raw_punch_in || null,
-        raw_punch_out: r.summary?.[0]?.raw_punch_out || null,
-        has_pending_correction: r.summary?.[0]?.has_pending_correction || false,
-        late_minutes: r.summary?.[0]?.late_minutes || 0,
-        early_out_minutes: r.summary?.[0]?.early_out_minutes || 0,
-        worked_minutes_net: r.summary?.[0]?.worked_minutes_net || 0
+        status: r.status || 'ABSENT'
     }));
 }
 

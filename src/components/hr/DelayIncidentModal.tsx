@@ -13,9 +13,10 @@ interface Props {
     onClose: () => void;
     onSuccess: () => void;
     currentDate: string;
+    suggestedMins?: number;
 }
 
-export default function DelayIncidentModal({ isOpen, onClose, onSuccess, currentDate }: Props) {
+export default function DelayIncidentModal({ isOpen, onClose, onSuccess, currentDate, suggestedMins }: Props) {
     const [staff, setStaff] = useState<StaffMaster[]>([]);
     const [shiftGroups, setShiftGroups] = useState<ShiftGroup[]>([]);
     const [isSaving, setIsSaving] = useState(false);
@@ -34,8 +35,16 @@ export default function DelayIncidentModal({ isOpen, onClose, onSuccess, current
     useEffect(() => {
         if (isOpen) {
             loadData();
+            if (suggestedMins && suggestedMins > 0) {
+                setIncidentData(prev => ({
+                    ...prev,
+                    excuse_minutes: suggestedMins,
+                    // If we have aggregated late minutes, the excuse window should likely cover them
+                    p_end_time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+                }));
+            }
         }
-    }, [isOpen]);
+    }, [isOpen, suggestedMins]);
 
     async function loadData() {
         try {
@@ -58,7 +67,7 @@ export default function DelayIncidentModal({ isOpen, onClose, onSuccess, current
 
         try {
             setIsSaving(true);
-            
+
             await createDelayIncidentRPC({
                 p_incident_date: currentDate,
                 p_reason: incidentData.reason,
@@ -125,12 +134,19 @@ export default function DelayIncidentModal({ isOpen, onClose, onSuccess, current
                             </div>
 
                             <div className="space-y-2">
-                                <label className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Excuse Up To (Mins)</label>
+                                <div className="flex items-center justify-between">
+                                    <label className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Excuse Up To (Mins)</label>
+                                    {suggestedMins !== undefined && (
+                                        <span className="text-[9px] font-black text-brand-500 uppercase tracking-widest bg-brand-500/10 px-2 py-0.5 rounded-lg border border-brand-500/20">
+                                            Group Impact: {suggestedMins}m
+                                        </span>
+                                    )}
+                                </div>
                                 <div className="flex items-center gap-4">
                                     <input
                                         type="range"
-                                        min="5"
-                                        max="120"
+                                        min="0"
+                                        max="480"
                                         step="5"
                                         value={incidentData.excuse_minutes}
                                         onChange={e => setIncidentData({ ...incidentData, excuse_minutes: parseInt(e.target.value) })}
@@ -231,8 +247,14 @@ export default function DelayIncidentModal({ isOpen, onClose, onSuccess, current
                     </button>
                     <button
                         onClick={handleSubmit}
-                        disabled={isSaving || !incidentData.reason || (!incidentData.responsible_staff_ids?.length && !incidentData.p_start_time)}
-                        className="btn-primary"
+                        disabled={
+                            isSaving ||
+                            !incidentData.reason ||
+                            !incidentData.p_start_time ||
+                            !incidentData.p_end_time ||
+                            !incidentData.responsible_staff_ids?.length
+                        }
+                        className="btn-primary disabled:opacity-30 disabled:cursor-not-allowed"
                     >
                         {isSaving ? <div className="spinner !w-4 !h-4 !border-2" /> : <Save className="w-4 h-4" />}
                         Submit & Reallocate Penalty
