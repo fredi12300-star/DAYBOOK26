@@ -5,6 +5,7 @@ import {
     fetchLeaveBalances,
     fetchAttendanceRecords
 } from '../../lib/supabase';
+import { getLocalTodayISO } from '../../lib/attendanceUtils';
 import StaffSuiteLayout from './StaffSuiteLayout';
 import StaffDashboard from './screens/StaffDashboard';
 import StaffAttendance from './screens/StaffAttendance';
@@ -32,7 +33,7 @@ export default function StaffSuite() {
         const loadDashboardData = async () => {
             setIsLoading(true);
             try {
-                const today = new Date().toISOString().split('T')[0];
+                const today = getLocalTodayISO();
                 const [attendance, balances] = await Promise.all([
                     fetchAttendanceRecords(today),
                     fetchLeaveBalances(new Date().getFullYear())
@@ -52,7 +53,7 @@ export default function StaffSuite() {
         };
 
         loadDashboardData();
-    }, [staff?.id]);
+    }, [staff?.id, isAuthLoading]);
 
     const getTitle = () => {
         switch (activeTab) {

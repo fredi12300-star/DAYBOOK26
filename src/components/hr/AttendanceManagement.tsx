@@ -6,10 +6,9 @@ import {
     Coffee,
     AlertCircle,
     ShieldAlert,
-    Clock,
-    History as HistoryIcon,
     Calendar,
-    Search,
+    Clock, Search,
+    History as HistoryIcon,
     User,
     Save,
     Settings,
@@ -33,7 +32,7 @@ import {
 } from '../../lib/supabase';
 import { useAuth } from '../../lib/auth';
 import DelayIncidentModal from './DelayIncidentModal';
-import { combineDateAndTimeWithBoundary, formatISOToLocalTime } from '../../lib/attendanceUtils';
+import { combineDateAndTimeWithBoundary, formatISOToLocalTime, getYesterdayISO } from '../../lib/attendanceUtils';
 
 // Helper for timezone-safe local month string (YYYY-MM)
 const getLocalMonthString = (date: Date = new Date()) => {
@@ -226,7 +225,7 @@ function TimeInput12({
 
 export default function AttendanceManagement() {
     const [activeTab, setActiveTab] = useState<'update' | 'incidents' | 'profiles' | 'reports' | 'policy'>('update');
-    const [selectedDate, setSelectedDate] = useState('');
+    const [selectedDate, setSelectedDate] = useState(getYesterdayISO());
     const [selectedMonth, setSelectedMonth] = useState(getLocalMonthString());
     const [selectedShiftGroupId, setSelectedShiftGroupId] = useState<string>('all');
 
@@ -462,7 +461,7 @@ export default function AttendanceManagement() {
         }
 
         // For HR Managers with direct approval rights
-        if (canApproveCorrection) {
+        if (canManageAttendance) {
             setRecords(prev => {
                 const exists = prev.find(r => r.staff_id === staffId);
                 const updatedFields: any = { [field]: finalValue };
@@ -512,17 +511,28 @@ export default function AttendanceManagement() {
     }
 
     const stats = useMemo(() => {
-        const leaveStaffIds = new Set(leaveDays.map(ld => ld.staff_id));
+        const filteredStaff = selectedShiftGroupId === 'all'
+            ? staff
+            : staff.filter(s => s.shift_group_id === selectedShiftGroupId);
+        const filteredStaffIds = new Set(filteredStaff.map(s => s.id));
+
+        const filteredRecords = records.filter(r => filteredStaffIds.has(r.staff_id));
+        const filteredLeaveDays = leaveDays.filter(ld => filteredStaffIds.has(ld.staff_id));
+        const filteredIncidents = incidents.filter(i => filteredStaffIds.has(i.staff_id));
+        const filteredCorrections = corrections.filter(c => filteredStaffIds.has(c.staff_id));
+
+        const leaveStaffIds = new Set(filteredLeaveDays.map(ld => ld.staff_id));
+
         return {
-            total: staff.length,
-            present: records.filter(r => ['PRESENT', 'LATE_PRESENT', 'EARLY_OUT'].includes(r.status)).length,
-            absent: staff.length - leaveStaffIds.size - records.filter(r => r.status && r.status !== 'ABSENT').length,
-            leave: leaveDays.length,
-            missPunch: records.filter(r => r.status === 'MISS_PUNCH').length,
-            incidents: incidents.filter(i => i.status === 'PENDING').length,
-            corrections: corrections.filter(c => c.status === 'SUBMITTED' || c.status === 'MANAGER_REVIEW').length
+            total: filteredStaff.length,
+            present: filteredRecords.filter(r => ['PRESENT', 'LATE_PRESENT', 'EARLY_OUT'].includes(r.status)).length,
+            absent: filteredStaff.length - leaveStaffIds.size - filteredRecords.filter(r => r.status && r.status !== 'ABSENT').length,
+            leave: filteredLeaveDays.length,
+            missPunch: filteredRecords.filter(r => r.status === 'MISS_PUNCH').length,
+            incidents: filteredIncidents.filter(i => i.status === 'PENDING').length,
+            corrections: filteredCorrections.filter(c => c.status === 'SUBMITTED' || c.status === 'MANAGER_REVIEW').length
         };
-    }, [staff, records, incidents, leaveDays]);
+    }, [staff, records, incidents, leaveDays, corrections, selectedShiftGroupId]);
 
     const groupedStaff = useMemo(() => {
         const filtered = selectedShiftGroupId === 'all' ? staff : staff.filter(s => s.shift_group_id === selectedShiftGroupId);
@@ -663,7 +673,13 @@ export default function AttendanceManagement() {
                         <div className="flex flex-wrap items-start gap-4">
                             <div className="flex items-start gap-3">
                                 <div className="flex flex-col gap-1.5">
-                                    <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="input-base !py-2.5 !px-4 text-[12px] font-black tracking-widest bg-slate-900 border-slate-700 w-44" />
+                                    <input
+                                        type="date"
+                                        value={selectedDate}
+                                        max={getYesterdayISO()}
+                                        onChange={e => setSelectedDate(e.target.value)}
+                                        className="input-base !py-2.5 !px-4 text-[12px] font-black tracking-widest bg-slate-900 border-slate-700 w-44"
+                                    />
                                     <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1">
                                         {getWeekday(selectedDate)}
                                     </div>
@@ -690,7 +706,7 @@ export default function AttendanceManagement() {
                             {canManageAttendance && (
                                 <button
                                     onClick={() => setIsVerifyModalOpen(true)}
-                                    disabled={isSaving || !records.length || isWriteDisabled}
+                                    disabled={isSaving || isWriteDisabled}
                                     className="btn-primary !py-2 disabled:opacity-50"
                                 >
                                     {isSaving ? <div className="spinner !w-4 !h-4" /> : <Save className="w-4 h-4" />}
@@ -1053,28 +1069,58 @@ export default function AttendanceManagement() {
                                             </div>
                                         </div>
 
-                                        {['SUBMITTED', 'MANAGER_REVIEW'].includes(corr.status) && (canManageAttendance || canApproveCorrection) && (
+                                        {/* Manager Approval Stage */}
+                                        {corr.status === 'SUBMITTED' && (canManageAttendance || canApproveCorrection) && (
                                             <div className="flex items-center gap-3">
                                                 <button
                                                     onClick={async () => {
                                                         const reason = prompt('Review Reason (Optional):');
-                                                        const action = canApproveCorrection ? 'HR_APPROVE' : 'MANAGER_APPROVE';
                                                         try {
-                                                            await resolveAttendanceCorrectionRPC({ p_correction_id: corr.id, p_action: action, p_reason: reason || 'Reviewed' });
+                                                            await resolveAttendanceCorrectionRPC({ p_correction_id: corr.id, p_action: 'MANAGER_APPROVE', p_reason: reason || 'Reviewed' });
                                                             loadData();
                                                         } catch (e: any) { alert(e.message); }
                                                     }}
                                                     className="px-6 py-2 bg-indigo-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-500/20"
                                                 >
-                                                    {canApproveCorrection ? 'Final Approve' : 'Mgr Approve'}
+                                                    Mgr Approve
                                                 </button>
                                                 <button
                                                     onClick={async () => {
                                                         const reason = prompt('Rejection Reason (Required):');
                                                         if (!reason) return;
-                                                        const action = canApproveCorrection ? 'HR_REJECT' : 'MANAGER_REJECT';
                                                         try {
-                                                            await resolveAttendanceCorrectionRPC({ p_correction_id: corr.id, p_action: action, p_reason: reason });
+                                                            await resolveAttendanceCorrectionRPC({ p_correction_id: corr.id, p_action: 'MANAGER_REJECT', p_reason: reason });
+                                                            loadData();
+                                                        } catch (e: any) { alert(e.message); }
+                                                    }}
+                                                    className="px-6 py-2 bg-rose-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-rose-600 transition-all shadow-lg shadow-rose-500/20"
+                                                >
+                                                    Reject
+                                                </button>
+                                            </div>
+                                        )}
+
+                                        {/* HR Final Approval Stage */}
+                                        {corr.status === 'MANAGER_REVIEW' && canManageAttendance && (
+                                            <div className="flex items-center gap-3">
+                                                <button
+                                                    onClick={async () => {
+                                                        const reason = prompt('Review Reason (Optional):');
+                                                        try {
+                                                            await resolveAttendanceCorrectionRPC({ p_correction_id: corr.id, p_action: 'HR_APPROVE', p_reason: reason || 'Reviewed' });
+                                                            loadData();
+                                                        } catch (e: any) { alert(e.message); }
+                                                    }}
+                                                    className="px-6 py-2 bg-emerald-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20"
+                                                >
+                                                    Final Approve
+                                                </button>
+                                                <button
+                                                    onClick={async () => {
+                                                        const reason = prompt('Rejection Reason (Required):');
+                                                        if (!reason) return;
+                                                        try {
+                                                            await resolveAttendanceCorrectionRPC({ p_correction_id: corr.id, p_action: 'HR_REJECT', p_reason: reason });
                                                             loadData();
                                                         } catch (e: any) { alert(e.message); }
                                                     }}
@@ -1446,6 +1492,84 @@ export default function AttendanceManagement() {
                                 />
                             </div>
 
+                            <div className="space-y-2">
+                                <label className="text-[9px] font-black text-brand-500 uppercase tracking-widest block ml-1">Boundary Start</label>
+                                <input
+                                    type="time"
+                                    value={editingShift?.boundary_start_time || ''}
+                                    onChange={e => setEditingShift(prev => prev ? { ...prev, boundary_start_time: e.target.value } : null)}
+                                    className="input-base border-brand-500/20"
+                                />
+                            </div>
+
+                            <div className="space-y-2">
+                                <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Min Hrs (Full)</label>
+                                <input
+                                    type="number"
+                                    step="0.5"
+                                    value={editingShift?.min_hours_present === undefined || editingShift?.min_hours_present === 0 ? '' : editingShift?.min_hours_present}
+                                    onChange={e => setEditingShift(prev => prev ? { ...prev, min_hours_present: e.target.value === '' ? 0 : parseFloat(e.target.value) } : null)}
+                                    className="input-base"
+                                    placeholder="8"
+                                />
+                            </div>
+
+                            <div className="space-y-2">
+                                <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Min Hrs (Half)</label>
+                                <input
+                                    type="number"
+                                    step="0.5"
+                                    value={editingShift?.min_hours_half_day === undefined || editingShift?.min_hours_half_day === 0 ? '' : editingShift?.min_hours_half_day}
+                                    onChange={e => setEditingShift(prev => prev ? { ...prev, min_hours_half_day: e.target.value === '' ? 0 : parseFloat(e.target.value) } : null)}
+                                    className="input-base"
+                                    placeholder="4"
+                                />
+                            </div>
+
+                            <div className="col-span-2 space-y-3 p-4 bg-slate-900/50 border border-slate-800 rounded-xl">
+                                <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block">Weekly Off Strategy</label>
+                                <div className="flex flex-wrap gap-2">
+                                    {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, idx) => (
+                                        <button
+                                            key={day}
+                                            onClick={() => {
+                                                const current = editingShift?.weekly_off || [];
+                                                const next = current.includes(idx) ? current.filter(d => d !== idx) : [...current, idx];
+                                                setEditingShift({ ...editingShift!, weekly_off: next });
+                                            }}
+                                            className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest border transition-all ${(editingShift?.weekly_off || []).includes(idx)
+                                                ? 'bg-brand-500/20 border-brand-500 text-brand-500'
+                                                : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-white'
+                                                }`}
+                                        >
+                                            {day}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="space-y-2">
+                                <label className="text-[9px] font-black text-rose-500 uppercase tracking-widest block ml-1">Penalty / Min</label>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={editingShift?.penalty_per_minute === undefined ? '' : editingShift?.penalty_per_minute}
+                                    onChange={e => setEditingShift(prev => prev ? { ...prev, penalty_per_minute: e.target.value === '' ? 0 : parseFloat(e.target.value) } : null)}
+                                    className="input-base border-rose-500/10"
+                                    placeholder="0.00"
+                                />
+                            </div>
+
+                            <div className="space-y-2">
+                                <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Max Penalty %</label>
+                                <input
+                                    type="number"
+                                    value={editingShift?.max_monthly_penalty_pct === undefined ? '' : editingShift?.max_monthly_penalty_pct}
+                                    onChange={e => setEditingShift(prev => prev ? { ...prev, max_monthly_penalty_pct: e.target.value === '' ? 10 : parseFloat(e.target.value) } : null)}
+                                    className="input-base"
+                                    placeholder="10"
+                                />
+                            </div>
 
                             <div className="space-y-2">
                                 <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block ml-1">Break Duration (Mins)</label>

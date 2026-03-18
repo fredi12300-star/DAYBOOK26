@@ -22,6 +22,16 @@
     @apply font-sans antialiased;
     @apply min-h-screen selection:bg-brand-500/20;
     @apply overflow-x-hidden w-full;
+    @apply select-none; /* Fixes blinking caret on click by preventing selection globally */
+  }
+
+  /* Re-enable text selection where appropriate */
+  input, textarea, select, [contenteditable="true"] {
+    @apply select-auto cursor-text;
+  }
+
+  .table-cell, th, td, pre, code {
+    @apply select-text;
   }
 
   h1,
@@ -31,6 +41,12 @@
   h5,
   h6 {
     @apply font-display tracking-tight;
+    @apply select-none cursor-default;
+    -webkit-user-modify: read-only;
+  }
+  
+  p, span, label {
+    @apply cursor-default;
   }
 }
 

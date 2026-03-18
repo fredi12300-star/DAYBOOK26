@@ -1,4 +1,4 @@
-﻿import { createClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 import {
     Ledger, LedgerTag, Voucher, VoucherType, VoucherGroup,
     Template, TemplateGroup, Party, PartyGroup,
@@ -1844,7 +1844,7 @@ export async function fetchStaffMasters(activeOnly = false) {
     return withRetry(async () => {
         let query = supabase
             .from('staff_master')
-            .select('*, exit_cases(final_lwd, status)');
+            .select('*, exit_cases(final_lwd, status), shift_group:shift_groups(*)');
 
         if (activeOnly) {
             query = query.neq('is_active', false);
@@ -3272,10 +3272,32 @@ export async function getEffectiveShift(staffId: string, date: string) {
 export async function fetchAttendanceRecords(date: string) {
     const { data: recordsData, error: recError } = await supabase
         .from('attendance_records')
-        .select('*')
+        .select(`
+            *,
+            summary:attendance_summaries (
+                primary_status,
+                raw_punch_in,
+                raw_punch_out,
+                has_pending_correction,
+                late_minutes,
+                early_out_minutes,
+                worked_minutes_net
+            )
+        `)
         .eq('attendance_date', date);
     if (recError) throw recError;
-    return recordsData;
+
+    // Flatten the summary fields into the record for the UI
+    return (recordsData || []).map((r: any) => ({
+        ...r,
+        status: r.summary?.[0]?.primary_status || r.status,
+        raw_punch_in: r.summary?.[0]?.raw_punch_in || null,
+        raw_punch_out: r.summary?.[0]?.raw_punch_out || null,
+        has_pending_correction: r.summary?.[0]?.has_pending_correction || false,
+        late_minutes: r.summary?.[0]?.late_minutes || 0,
+        early_out_minutes: r.summary?.[0]?.early_out_minutes || 0,
+        worked_minutes_net: r.summary?.[0]?.worked_minutes_net || 0
+    }));
 }
 
 
@@ -3309,16 +3331,20 @@ export async function upsertAttendanceRecords(records: Partial<AttendanceRecord>
         const attendanceDate: string = r.attendance_date || new Date().toISOString().split('T')[0];
 
         // Strictly whitelist columns for attendance_records
+        // DERIVED STATUS REMOVED: preserve intentional ABSENT marking even if punches exist
+        let status = r.status || 'ABSENT';
+
         const cleaned: any = {
             staff_id: r.staff_id,
             attendance_date: attendanceDate,
-            status: r.status || 'ABSENT',
+            status: status,
             is_verified: r.is_verified,
             verified_by: r.verified_by,
             notes: r.notes,
             incident_id: (r as any).incident_id,
             correction_reason: r.correction_reason,
             excused_late_minutes: r.excused_late_minutes,
+            excused_early_out_minutes: (r as any).excused_early_out_minutes,
             updated_at: new Date().toISOString(),
         };
 
@@ -3391,6 +3417,20 @@ export async function resolveAttendanceIncidentRPC(params: {
 }) {
     const { error } = await supabase.rpc('resolve_attendance_incident', params);
     if (error) throw error;
+}
+
+export async function createDelayIncidentRPC(params: {
+    p_incident_date: string;
+    p_reason: string;
+    p_responsible_staff_ids: string[];
+    p_excuse_minutes: number;
+    p_shift_group_id?: string | null;
+    p_start_time?: string;
+    p_end_time?: string;
+}) {
+    const { data, error } = await supabase.rpc('create_delay_incident_v1', params);
+    if (error) throw error;
+    return data as string;
 }
 
 export async function requestAttendanceCorrectionRPC(params: {

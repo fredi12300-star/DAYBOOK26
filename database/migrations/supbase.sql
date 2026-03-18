@@ -2195,6 +2195,15 @@ CREATE TABLE IF NOT EXISTS shift_groups (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Ensure all shift_groups columns exist (Hardening for Phase 7 idempotency)
+ALTER TABLE public.shift_groups ADD COLUMN IF NOT EXISTS weekly_off INTEGER[];
+ALTER TABLE public.shift_groups ADD COLUMN IF NOT EXISTS penalty_per_minute NUMERIC(12,2) DEFAULT 0;
+ALTER TABLE public.shift_groups ADD COLUMN IF NOT EXISTS max_monthly_penalty_pct NUMERIC(5,2) DEFAULT 100;
+ALTER TABLE public.shift_groups ADD COLUMN IF NOT EXISTS boundary_start_time TIME DEFAULT '06:00:00';
+ALTER TABLE public.shift_groups ADD COLUMN IF NOT EXISTS min_hours_present NUMERIC(4,2) DEFAULT 8;
+ALTER TABLE public.shift_groups ADD COLUMN IF NOT EXISTS min_hours_half_day NUMERIC(4,2) DEFAULT 4;
+
+
 -- Trigger function for updated_at
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
 RETURNS TRIGGER AS $$
@@ -4137,6 +4146,7 @@ COMMIT;
 
 
 -- Migration: Shift Assignment & Roster Versioning (Phase 1)
+CREATE EXTENSION IF NOT EXISTS btree_gist;
 BEGIN;
 
 -- 1. Enum for Shift Assignment Sources
@@ -4159,7 +4169,14 @@ CREATE TABLE IF NOT EXISTS public.shift_assignments (
     reason TEXT,
     created_by UUID REFERENCES auth.users(id),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+    -- Temporal Overlap Protection
+    CONSTRAINT shift_assignment_overlap EXCLUDE USING gist (
+        staff_id WITH =,
+        source WITH =,
+        daterange(effective_from, COALESCE(effective_to, 'infinity'::date), '[]') WITH &&
+    )
 );
 
 -- 3. Hierarchical Resolver Function
@@ -4204,7 +4221,8 @@ SELECT
     'BASE'::shift_source_type, 
     COALESCE(doj, created_at::date, CURRENT_DATE)
 FROM public.staff_master
-WHERE shift_group_id IS NOT NULL;
+WHERE shift_group_id IS NOT NULL
+ON CONFLICT DO NOTHING;
 
 -- 5. Updated_at Trigger
 DROP TRIGGER IF EXISTS trg_shift_assignments_updated_at ON public.shift_assignments;
@@ -4583,18 +4601,20 @@ BEGIN
     -- 3. Metrics
     late_mins := 0;
     IF v_first_in IS NOT NULL AND v_first_in > (v_shift_start + (v_shift.grace_in_minutes || ' minutes')::INTERVAL) THEN
-        late_mins := EXTRACT(EPOCH FROM (v_first_in - v_shift_start)) / 60;
+        late_mins := EXTRACT(EPOCH FROM (v_first_in - (v_shift_start + (v_shift.grace_in_minutes || ' minutes')::INTERVAL))) / 60;
     END IF;
 
     early_out_mins := 0;
     IF v_last_out IS NOT NULL AND v_last_out < (v_shift_end - (v_shift.grace_out_minutes || ' minutes')::INTERVAL) THEN
-        early_out_mins := EXTRACT(EPOCH FROM (v_shift_end - v_last_out)) / 60;
+        early_out_mins := EXTRACT(EPOCH FROM ((v_shift_end - (v_shift.grace_out_minutes || ' minutes')::INTERVAL) - v_last_out)) / 60;
     END IF;
 
     v_net_minutes := GREATEST(0, v_total_gross - COALESCE(v_shift.break_duration_minutes, 0));
 
     -- 4. Status Mapping
-    IF v_total_gross = 0 THEN
+    IF COALESCE(array_length(v_anomalies, 1), 0) > 0 AND ('MISSING_OUT' = ANY(v_anomalies) OR 'DOUBLE_IN_OR_MISMATCH' = ANY(v_anomalies)) THEN
+        primary_status := 'MISS_PUNCH';
+    ELSIF v_total_gross = 0 THEN
         primary_status := 'ABSENT';
     ELSIF v_net_minutes >= (v_shift.min_hours_present * 60) THEN
         IF late_mins > 0 THEN primary_status := 'LATE_PRESENT';
@@ -5160,34 +5180,63 @@ BEGIN
         SELECT
             e.event_timestamp AS tin,
             e.event_type AS type_in,
-            LEAD(e.event_timestamp) OVER (ORDER BY e.event_timestamp) AS tout,
-            LEAD(e.event_type) OVER (ORDER BY e.event_timestamp) AS type_out
+            -- Look for the next event of ANY type
+            LEAD(e.event_timestamp) OVER (ORDER BY e.event_timestamp) AS tnext,
+            LEAD(e.event_type) OVER (ORDER BY e.event_timestamp) AS typenext
         FROM normalized e
+        -- We only pair starting from PUNCH_IN or unexpected starters
+        WHERE e.event_type IN ('PUNCH_IN', 'PUNCH_OUT', 'BREAK_START', 'BREAK_END')
     ),
-    refined AS (
+    sessions AS (
         SELECT
             tin AS session_in,
-            tout AS session_out,
+            tnext AS session_out,
             CASE
-                WHEN type_in = 'PUNCH_IN' AND type_out = 'PUNCH_OUT' THEN FALSE
+                WHEN type_in = 'PUNCH_IN' AND typenext = 'PUNCH_OUT' THEN FALSE
+                WHEN type_in = 'PUNCH_IN' AND typenext IS NULL THEN TRUE -- Missing out
+                WHEN type_in = 'PUNCH_IN' AND typenext IN ('BREAK_START', 'BREAK_END') THEN FALSE -- Internal events are OK now
                 ELSE TRUE
-            END AS anomaly,
+            END AS is_anomaly,
             CASE
-                WHEN type_in = 'PUNCH_IN' AND type_out IS NULL THEN 'MISSING_OUT'
-                WHEN type_in = 'PUNCH_IN' AND type_out <> 'PUNCH_OUT' THEN 'DOUBLE_IN_OR_MISMATCH'
+                WHEN type_in = 'PUNCH_IN' AND typenext IS NULL THEN 'MISSING_OUT'
+                WHEN type_in = 'PUNCH_IN' AND typenext IN ('PUNCH_IN') THEN 'DOUBLE_IN'
+                WHEN type_in = 'PUNCH_OUT' AND (typenext IS NULL OR typenext = 'PUNCH_IN') THEN NULL -- Valid end
                 ELSE NULL
             END AS reason
         FROM paired
         WHERE type_in = 'PUNCH_IN'
+    ),
+    -- Grouping logic to skip internal breaks and find final out
+    final_sessions AS (
+        SELECT
+            s.session_in,
+            -- For a PUNCH_IN, find its corresponding PUNCH_OUT by skipping breaks
+            COALESCE(
+                (SELECT n.event_timestamp FROM normalized n 
+                 WHERE n.event_timestamp > s.session_in AND n.event_type = 'PUNCH_OUT' 
+                 ORDER BY n.event_timestamp ASC LIMIT 1),
+                s.session_out -- Fallback to next event if no PUNCH_OUT found
+            ) AS session_out,
+            EXISTS (
+                SELECT 1 FROM paired p 
+                WHERE p.tin > s.session_in 
+                  AND p.tin < COALESCE((SELECT n.event_timestamp FROM normalized n WHERE n.event_timestamp > s.session_in AND n.event_type = 'PUNCH_OUT' ORDER BY n.event_timestamp ASC LIMIT 1), '9999-12-31'::timestamptz)
+                  AND p.type_in = 'PUNCH_IN'
+            ) AS has_intervening_in
+        FROM sessions s
     )
     SELECT
-        ROW_NUMBER() OVER (ORDER BY r.session_in ASC)::INTEGER,
-        r.session_in,
-        r.session_out,
-        COALESCE(EXTRACT(EPOCH FROM (r.session_out - r.session_in)) / 60, 0)::INTEGER,
-        r.anomaly,
-        r.reason
-    FROM refined r;
+        ROW_NUMBER() OVER (ORDER BY f.session_in ASC)::INTEGER,
+        f.session_in,
+        f.session_out,
+        COALESCE(EXTRACT(EPOCH FROM (f.session_out - f.session_in)) / 60, 0)::INTEGER,
+        f.has_intervening_in OR (f.session_out IS NULL) AS is_anomaly,
+        CASE 
+            WHEN f.session_out IS NULL THEN 'MISSING_OUT'
+            WHEN f.has_intervening_in THEN 'DOUBLE_IN_OR_MISMATCH'
+            ELSE NULL
+        END AS anomaly_reason
+    FROM final_sessions f;
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
@@ -5203,7 +5252,16 @@ CREATE OR REPLACE FUNCTION public.request_attendance_incident(
 RETURNS UUID AS $$
 DECLARE
     v_incident_id UUID;
+    v_is_admin BOOLEAN;
+    v_is_self BOOLEAN;
 BEGIN
+    v_is_admin := public.has_permission('hr_attendance', 'manage_attendance');
+    SELECT (user_id = auth.uid()) INTO v_is_self FROM public.staff_master WHERE id = p_staff_id;
+
+    IF NOT (v_is_admin OR v_is_self) THEN
+        RAISE EXCEPTION 'Unauthorized: You can only request incidents for yourself.';
+    END IF;
+
     INSERT INTO public.attendance_incidents (
         staff_id,
         attendance_date,
@@ -5283,7 +5341,16 @@ CREATE OR REPLACE FUNCTION public.request_attendance_correction(
 RETURNS UUID AS $$
 DECLARE
     v_correction_id UUID;
+    v_is_admin BOOLEAN;
+    v_is_self BOOLEAN;
 BEGIN
+    v_is_admin := public.has_permission('hr_attendance', 'manage_attendance');
+    SELECT (user_id = auth.uid()) INTO v_is_self FROM public.staff_master WHERE id = p_staff_id;
+
+    IF NOT (v_is_admin OR v_is_self) THEN
+        RAISE EXCEPTION 'Unauthorized: You can only request corrections for yourself.';
+    END IF;
+
     INSERT INTO public.attendance_corrections (
         staff_id,
         attendance_date,
@@ -5329,6 +5396,7 @@ DECLARE
     v_corr RECORD;
     v_new_status attendance_correction_state;
     v_is_hr BOOLEAN;
+    v_is_manager BOOLEAN;
 BEGIN
     SELECT * INTO v_corr FROM public.attendance_corrections WHERE id = p_correction_id;
     IF NOT FOUND THEN
@@ -5336,6 +5404,17 @@ BEGIN
     END IF;
 
     v_is_hr := public.has_permission('hr_attendance', 'manage_attendance');
+    
+    IF NOT v_is_hr THEN
+        SELECT EXISTS (
+            SELECT 1 FROM public.staff_master 
+            WHERE id = v_corr.staff_id AND manager_id = auth.uid()
+        ) INTO v_is_manager;
+
+        IF NOT v_is_manager THEN
+            RAISE EXCEPTION 'Unauthorized: Manager or HR permissions required for resolution.';
+        END IF;
+    END IF;
 
     CASE p_action
         WHEN 'MANAGER_APPROVE' THEN
@@ -5696,7 +5775,7 @@ CREATE POLICY "Employee Select" ON public.shift_groups FOR SELECT TO authenticat
 DROP POLICY IF EXISTS "Employee Select" ON public.holidays;
 CREATE POLICY "Employee Select" ON public.holidays FOR SELECT TO authenticated USING (true);
 DROP POLICY IF EXISTS "Employee Select" ON public.attendance_records;
-CREATE POLICY "Employee Select" ON public.attendance_records FOR SELECT TO authenticated USING (staff_id = auth.uid());
+CREATE POLICY "Employee Select" ON public.attendance_records FOR SELECT TO authenticated USING (EXISTS (SELECT 1 FROM public.user_profiles UP WHERE UP.id = auth.uid() AND UP.staff_id = staff_id));
 
 
 -- Legacy Delay Incidents
@@ -5710,12 +5789,12 @@ USING (auth.uid() = ANY(responsible_staff_ids) OR public.has_permission('hr_atte
 DROP POLICY IF EXISTS "attendance_incidents: SELECT" ON public.attendance_incidents;
 CREATE POLICY "attendance_incidents: SELECT" ON public.attendance_incidents
 FOR SELECT TO authenticated
-USING (staff_id = auth.uid() OR public.has_permission('hr_attendance', 'view') OR public.get_is_super_admin());
+USING (EXISTS (SELECT 1 FROM public.user_profiles UP WHERE UP.id = auth.uid() AND UP.staff_id = staff_id) OR public.has_permission('hr_attendance', 'view') OR public.get_is_super_admin());
 
 DROP POLICY IF EXISTS "attendance_incidents: INSERT" ON public.attendance_incidents;
 CREATE POLICY "attendance_incidents: INSERT" ON public.attendance_incidents
 FOR INSERT TO authenticated
-WITH CHECK (staff_id = auth.uid() OR public.has_permission('hr_attendance', 'manage_attendance') OR public.get_is_super_admin());
+WITH CHECK (EXISTS (SELECT 1 FROM public.user_profiles UP WHERE UP.id = auth.uid() AND UP.staff_id = staff_id) OR public.has_permission('hr_attendance', 'manage_attendance') OR public.get_is_super_admin());
 
 DROP POLICY IF EXISTS "attendance_incidents: UPDATE (HR)" ON public.attendance_incidents;
 CREATE POLICY "attendance_incidents: UPDATE (HR)" ON public.attendance_incidents
@@ -5727,20 +5806,21 @@ USING (public.has_permission('hr_attendance', 'manage_attendance') OR public.get
 DROP POLICY IF EXISTS "attendance_corrections: SELECT" ON public.attendance_corrections;
 CREATE POLICY "attendance_corrections: SELECT" ON public.attendance_corrections
 FOR SELECT TO authenticated
-USING (staff_id = auth.uid() OR public.has_permission('hr_attendance', 'view') OR public.get_is_super_admin());
+USING (EXISTS (SELECT 1 FROM public.user_profiles UP WHERE UP.id = auth.uid() AND UP.staff_id = staff_id) OR public.has_permission('hr_attendance', 'view') OR public.get_is_super_admin());
 
 DROP POLICY IF EXISTS "attendance_corrections: INSERT" ON public.attendance_corrections;
 CREATE POLICY "attendance_corrections: INSERT" ON public.attendance_corrections
 FOR INSERT TO authenticated
-WITH CHECK (staff_id = auth.uid() OR public.has_permission('hr_attendance', 'manage_attendance') OR public.get_is_super_admin());
+WITH CHECK (EXISTS (SELECT 1 FROM public.user_profiles UP WHERE UP.id = auth.uid() AND UP.staff_id = staff_id) OR public.has_permission('hr_attendance', 'manage_attendance') OR public.get_is_super_admin());
 
 DROP POLICY IF EXISTS "attendance_corrections: UPDATE" ON public.attendance_corrections;
 CREATE POLICY "attendance_corrections: UPDATE" ON public.attendance_corrections
 FOR UPDATE TO authenticated
-USING (staff_id = auth.uid() OR public.has_permission('hr_attendance', 'manage_attendance') OR public.get_is_super_admin());
-
-
-
+USING (EXISTS (SELECT 1 FROM public.user_profiles UP WHERE UP.id = auth.uid() AND UP.staff_id = staff_id) OR public.has_permission('hr_attendance', 'manage_attendance') OR public.get_is_super_admin());
+DROP POLICY IF EXISTS "attendance_summaries: SELECT" ON public.attendance_summaries;
+CREATE POLICY "attendance_summaries: SELECT" ON public.attendance_summaries
+FOR SELECT TO authenticated
+USING (EXISTS (SELECT 1 FROM public.user_profiles UP WHERE UP.id = auth.uid() AND UP.staff_id = staff_id) OR public.has_permission('hr_attendance', 'view') OR public.get_is_super_admin());
 
 -- -----------------------------
 -- 4) DROP/RECREATE VIEW + RPCs (single source of truth)
@@ -5750,9 +5830,12 @@ DROP VIEW IF EXISTS public.attendance_audit_logs_view CASCADE;
 DROP FUNCTION IF EXISTS public.get_attendance_history_v2(UUID, DATE, DATE) CASCADE;
 DROP FUNCTION IF EXISTS public.create_delay_incident_v1(DATE, TEXT, UUID[], INTEGER, UUID, TIME, TIME) CASCADE;
 DROP FUNCTION IF EXISTS public.resolve_delay_incident_v1(UUID, TEXT, UUID) CASCADE;
-DROP FUNCTION IF EXISTS public.get_daily_muster_summary_v1(DATE, UUID);
-DROP FUNCTION IF EXISTS public.get_late_report_v1(DATE, DATE, UUID);
-DROP FUNCTION IF EXISTS public.verify_day_v1(DATE, UUID, UUID, UUID);
+DROP FUNCTION IF EXISTS public.get_daily_muster_summary_v1(DATE) CASCADE;
+DROP FUNCTION IF EXISTS public.get_daily_muster_summary_v1(DATE, UUID) CASCADE;
+DROP FUNCTION IF EXISTS public.get_late_report_v1(DATE, DATE) CASCADE;
+DROP FUNCTION IF EXISTS public.get_late_report_v1(DATE, DATE, UUID) CASCADE;
+DROP FUNCTION IF EXISTS public.verify_day_v1(DATE, UUID, UUID) CASCADE;
+DROP FUNCTION IF EXISTS public.verify_day_v1(DATE, UUID, UUID, UUID) CASCADE;
 
 -- Duplicate intermediate reporting RPCs removed.
 
@@ -5921,6 +6004,7 @@ BEGIN
         ar.punch_out::time,
         CASE
             WHEN h.id IS NOT NULL THEN 'HOLIDAY'
+            WHEN asu.primary_status IS NOT NULL THEN asu.primary_status
             WHEN ar.status IS NOT NULL THEN ar.status
             WHEN ld.id IS NOT NULL THEN 'LEAVE'
             WHEN sg.weekly_off IS NOT NULL AND EXTRACT(DOW FROM ds.d) = ANY(sg.weekly_off) THEN 'WEEKLY_OFF'
@@ -5929,8 +6013,8 @@ BEGIN
         COALESCE(ar.is_verified, false) AS is_verified,
         ar.verified_by,
         ar.notes,
-        COALESCE(ar.excused_late_minutes, 0) AS excused_late_minutes,
-        ar.incident_id,
+        COALESCE(ar.excused_late_minutes, (ai.impact_data->>'excuse_minutes')::integer, di.excuse_minutes, 0) AS excused_late_minutes,
+        COALESCE(ar.incident_id, asu.applied_incident_id) AS incident_id,
         COALESCE(di.status::text, ai.status::text) AS incident_status,
         (ld.id IS NOT NULL AND ar.punch_in IS NOT NULL) AS conflict_flag,
         h.name AS holiday_name,
@@ -5939,21 +6023,17 @@ BEGIN
     CROSS JOIN staff_master sm
     LEFT JOIN shift_groups sg ON sg.id = sm.shift_group_id
     LEFT JOIN attendance_records ar ON ar.attendance_date = ds.d AND ar.staff_id = sm.id
+    LEFT JOIN attendance_summaries asu ON asu.attendance_date = ds.d AND asu.staff_id = sm.id
     LEFT JOIN leave_days ld ON ld.leave_date = ds.d AND ld.staff_id = sm.id
-    LEFT JOIN delay_incidents di ON di.id = ar.incident_id
-    LEFT JOIN attendance_incidents ai ON ai.id = ar.incident_id
+    LEFT JOIN delay_incidents di ON di.id = COALESCE(ar.incident_id, asu.applied_incident_id)
+    LEFT JOIN attendance_incidents ai ON ai.id = COALESCE(ar.incident_id, asu.applied_incident_id)
     LEFT JOIN holidays h ON h.holiday_date = ds.d
     WHERE sm.id = p_staff_id
       AND ds.d >= COALESCE(sm.doj, DATE '1900-01-01')
-      AND (
-          ar.punch_in IS NOT NULL OR 
-          ar.punch_out IS NOT NULL OR 
-          ar.notes IS NOT NULL OR 
-          ar.incident_id IS NOT NULL OR 
-          h.id IS NOT NULL OR 
-          ld.id IS NOT NULL OR 
-          COALESCE(ar.is_verified, false) = true
-      )
+      /* 
+         Removed restrictive series filter to allow full date series including 
+         plain absences and weekly offs 
+      */
     ORDER BY ds.d DESC;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -5961,165 +6041,15 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 REVOKE ALL ON FUNCTION public.get_attendance_history_v2(UUID, DATE, DATE) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_attendance_history_v2(UUID, DATE, DATE) TO authenticated;
 
--- -----------------------------
--- 5) RPC: Create Delay Incident (atomic)
--- -----------------------------
-DROP FUNCTION IF EXISTS public.create_delay_incident_v1(DATE, TEXT, UUID[], INTEGER, UUID, UUID, TIME, TIME);
-CREATE OR REPLACE FUNCTION public.create_delay_incident_v1(
-    p_incident_date DATE,
-    p_reason TEXT,
-    p_responsible_staff_ids UUID[],
-    p_excuse_minutes INTEGER,
-    p_shift_group_id UUID DEFAULT NULL,
-    p_start_time TIME DEFAULT NULL,
-    p_end_time TIME DEFAULT NULL
-)
-RETURNS UUID AS $$
-DECLARE
-    v_incident_id UUID;
-    v_final_staff_ids UUID[] := p_responsible_staff_ids;
-BEGIN
-    IF NOT (public.has_permission('hr_attendance', 'manage_attendance')) THEN
-        RAISE EXCEPTION 'Unauthorized: Insufficient privileges to create delay incidents.';
-    END IF;
+-- [Legacy Delay Incident Functions Removed for Unification and Replayability]
+-- See Section 'PATCH: Attendance Workflows (Round 3)' for the final unified implementation.
 
-    -- Auto-scope: if no IDs provided, and a time window is provided, find staff who punched in within that window
-    IF (v_final_staff_ids IS NULL OR array_length(v_final_staff_ids, 1) IS NULL)
-       AND p_start_time IS NOT NULL AND p_end_time IS NOT NULL THEN
-        SELECT array_agg(DISTINCT ar.staff_id) INTO v_final_staff_ids
-        FROM attendance_records ar
-        JOIN staff_master sm ON sm.id = ar.staff_id
-        WHERE ar.attendance_date = p_incident_date
-          AND ar.punch_in IS NOT NULL
-          AND ar.punch_in::time BETWEEN p_start_time AND p_end_time
-          AND (p_shift_group_id IS NULL OR sm.shift_group_id = p_shift_group_id);
-    END IF;
-
-    INSERT INTO delay_incidents (
-        incident_date, reason, responsible_staff_ids, excuse_minutes, shift_group_id, status
-    )
-    VALUES (
-        p_incident_date,
-        p_reason,
-        COALESCE(v_final_staff_ids, '{}'),
-        p_excuse_minutes,
-        p_shift_group_id,
-        'PENDING'
-    )
-    RETURNING id INTO v_incident_id;
-
-    -- Link all records for that date & shift scope
-    UPDATE attendance_records ar
-    SET incident_id = v_incident_id,
-        notes = COALESCE(ar.notes, '') || ' | Linked to Delay Incident: ' || p_reason
-    FROM staff_master sm
-    WHERE ar.staff_id = sm.id
-      AND ar.attendance_date = p_incident_date
-      AND (p_shift_group_id IS NULL OR sm.shift_group_id = p_shift_group_id);
-
-    -- Mark responsible staff records (insert if missing)
-    IF v_final_staff_ids IS NOT NULL AND array_length(v_final_staff_ids, 1) > 0 THEN
-        INSERT INTO attendance_records (staff_id, attendance_date, notes, status, incident_id)
-        SELECT
-            unnest(v_final_staff_ids),
-            p_incident_date,
-            'PENALTY: Responsible for Delay Incident - ' || p_reason,
-            'ABSENT',
-            v_incident_id
-        ON CONFLICT (staff_id, attendance_date) DO UPDATE
-        SET incident_id = EXCLUDED.incident_id,
-            notes = COALESCE(attendance_records.notes, '') || ' | ' || EXCLUDED.notes;
-    END IF;
-
-    RETURN v_incident_id;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-REVOKE ALL ON FUNCTION public.create_delay_incident_v1(DATE, TEXT, UUID[], INTEGER, UUID, TIME, TIME) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.create_delay_incident_v1(DATE, TEXT, UUID[], INTEGER, UUID, TIME, TIME) TO authenticated;
-
--- -----------------------------
--- 6) RPC: Resolve Delay Incident
--- -----------------------------
-CREATE OR REPLACE FUNCTION public.resolve_delay_incident_v1(
-    p_incident_id UUID,
-    p_status TEXT,
-    p_approver_id UUID
-)
-RETURNS VOID AS $$
-DECLARE
-    v_total_penalty NUMERIC := 0;
-    v_resp_staff_ids UUID[];
-    v_penalty_per_staff NUMERIC;
-BEGIN
-    IF NOT (public.has_permission('hr_attendance', 'manage_attendance')) THEN
-        RAISE EXCEPTION 'Unauthorized: Insufficient privileges.';
-    END IF;
-
-    UPDATE delay_incidents
-    SET status = p_status,
-        approved_by = p_approver_id
-    WHERE id = p_incident_id;
-
-    IF p_status = 'APPROVED' THEN
-        -- Apply excused minutes to impacted staff and compute total penalty value to reallocate
-        WITH excused_stats AS (
-            UPDATE attendance_records ar
-            SET excused_late_minutes = LEAST(
-                    (di.impact_data->>'excuse_minutes')::integer,
-                    EXTRACT(EPOCH FROM (ar.punch_in::time - sg.start_time::time)::interval) / 60
-                )::int,
-                updated_at = NOW()
-            FROM attendance_incidents di
-            JOIN staff_master sm ON sm.id = ar.staff_id
-            JOIN shift_groups sg ON sg.id = sm.shift_group_id
-            WHERE ar.incident_id = p_incident_id
-              AND di.id = p_incident_id
-              AND ar.punch_in IS NOT NULL
-              AND ar.punch_in::time > sg.start_time::time
-            RETURNING ar.excused_late_minutes, sg.penalty_per_minute
-        )
-        SELECT COALESCE(SUM(excused_late_minutes * penalty_per_minute), 0)
-        INTO v_total_penalty
-        FROM excused_stats;
-
-        IF v_total_penalty > 0 THEN
-            SELECT responsible_staff_ids INTO v_resp_staff_ids
-            FROM attendance_incidents
-            WHERE id = p_incident_id;
-
-            IF v_resp_staff_ids IS NOT NULL AND array_length(v_resp_staff_ids, 1) > 0 THEN
-                v_penalty_per_staff := v_total_penalty / array_length(v_resp_staff_ids, 1);
-
-                INSERT INTO attendance_salary_deductions (staff_id, incident_id, amount, deduction_type, notes)
-                SELECT
-                    unnest(v_resp_staff_ids),
-                    p_incident_id,
-                    v_penalty_per_staff,
-                    'DELAY_REALLOCATION',
-                    'Reallocated penalty for Incident: ' || (SELECT staff_reason FROM attendance_incidents WHERE id = p_incident_id);
-            END IF;
-        END IF;
-
-    ELSIF p_status = 'REJECTED' THEN
-        UPDATE attendance_records
-        SET excused_late_minutes = 0
-        WHERE incident_id = p_incident_id;
-
-        UPDATE attendance_salary_deductions
-        SET status = 'CANCELLED'
-        WHERE incident_id = p_incident_id;
-    END IF;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-REVOKE ALL ON FUNCTION public.resolve_delay_incident_v1(UUID, TEXT, UUID) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.resolve_delay_incident_v1(UUID, TEXT, UUID) TO authenticated;
 
 -- -----------------------------
 -- 7) REPORT: Daily Muster Summary
 -- -----------------------------
-DROP FUNCTION IF EXISTS public.get_daily_muster_summary_v1(DATE, UUID);
+DROP FUNCTION IF EXISTS public.get_daily_muster_summary_v1(DATE) CASCADE;
+DROP FUNCTION IF EXISTS public.get_daily_muster_summary_v1(DATE, UUID) CASCADE;
 CREATE OR REPLACE FUNCTION public.get_daily_muster_summary_v1(
     p_date DATE
 )
@@ -6185,46 +6115,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- -----------------------------
--- 9) RPC: Verify Entire Day (DEDUPED)
--- -----------------------------
-DROP FUNCTION IF EXISTS public.verify_day_v1(DATE, UUID, UUID, UUID);
-CREATE OR REPLACE FUNCTION public.verify_day_v1(
-    p_date DATE,
-    p_verified_by UUID,
-    p_shift_group_id UUID DEFAULT NULL
-)
-RETURNS VOID AS $$
-BEGIN
-    -- 1) Insert missing records as ABSENT (ensures everyone has a row)
-    INSERT INTO attendance_records (staff_id, attendance_date, status, notes)
-    SELECT sm.id, p_date, 'ABSENT', 'Auto-generated during verification'
-    FROM staff_master sm
-    WHERE sm.is_active = true
-      AND (p_shift_group_id IS NULL OR sm.shift_group_id = p_shift_group_id)
-      AND NOT EXISTS (
-          SELECT 1
-          FROM attendance_records ar
-          WHERE ar.staff_id = sm.id
-            AND ar.attendance_date = p_date
-      )
-    ON CONFLICT (staff_id, attendance_date) DO NOTHING;
-
-    -- 2) Mark day rows as verified
-    UPDATE attendance_records ar
-    SET is_verified = TRUE,
-        verified_by = p_verified_by,
-        updated_at = NOW()
-    FROM staff_master sm
-    WHERE ar.attendance_date = p_date
-      AND ar.staff_id = sm.id
-      AND (p_shift_group_id IS NULL OR sm.shift_group_id = p_shift_group_id)
-      AND COALESCE(ar.is_verified, false) = false;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-REVOKE ALL ON FUNCTION public.verify_day_v1(DATE, UUID, UUID) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.verify_day_v1(DATE, UUID, UUID) TO authenticated;
+-- [Legacy verify_day_v1 Removed for Unification and Replayability]
 
 -- -----------------------------
 -- 10) VIEW: Attendance Audit Logs
@@ -6342,11 +6233,11 @@ WITH live_agg AS (
         staff_id,
         EXTRACT(YEAR FROM attendance_date)::int as year,
         EXTRACT(MONTH FROM attendance_date)::int as month,
-        COUNT(*) FILTER (WHERE status = 'PRESENT') as live_present,
-        COUNT(*) FILTER (WHERE status = 'ABSENT') as live_absent,
-        COUNT(*) FILTER (WHERE status = 'HALF_DAY') as live_half_day,
-        COUNT(*) FILTER (WHERE status = 'LEAVE') as live_leave
-    FROM public.attendance_records
+        COUNT(*) FILTER (WHERE primary_status IN ('PRESENT', 'LATE_PRESENT', 'EARLY_OUT')) as live_present,
+        COUNT(*) FILTER (WHERE primary_status = 'ABSENT') as live_absent,
+        COUNT(*) FILTER (WHERE primary_status = 'HALF_DAY') as live_half_day,
+        COUNT(*) FILTER (WHERE primary_status = 'LEAVE') as live_leave
+    FROM public.attendance_summaries
     GROUP BY staff_id, EXTRACT(YEAR FROM attendance_date), EXTRACT(MONTH FROM attendance_date)
 )
 SELECT 
@@ -6383,14 +6274,14 @@ BEGIN
         'year', p_year,
         'month', p_month,
         'total_days_in_month', EXTRACT(DAY FROM v_end_date),
-        'present_days', COUNT(*) FILTER (WHERE status = 'PRESENT'),
-        'absent_days', COUNT(*) FILTER (WHERE status = 'ABSENT'),
-        'half_days', COUNT(*) FILTER (WHERE status = 'HALF_DAY'),
-        'leave_days', COUNT(*) FILTER (WHERE status = 'LEAVE'),
-        'total_late_minutes', COALESCE(SUM(CASE WHEN punch_in IS NOT NULL THEN 0 ELSE 0 END), 0), -- Placeholder for actual late logic
-        'total_overtime_minutes', 0 -- Placeholder
+        'present_days', COUNT(*) FILTER (WHERE primary_status IN ('PRESENT', 'LATE_PRESENT', 'EARLY_OUT')),
+        'absent_days', COUNT(*) FILTER (WHERE primary_status = 'ABSENT'),
+        'half_days', COUNT(*) FILTER (WHERE primary_status = 'HALF_DAY'),
+        'leave_days', COUNT(*) FILTER (WHERE primary_status = 'LEAVE'),
+        'total_late_minutes', COALESCE(SUM(late_minutes), 0),
+        'total_overtime_minutes', COALESCE(SUM(overtime_minutes), 0)
     ) INTO v_result
-    FROM public.attendance_records
+    FROM public.attendance_summaries
     WHERE staff_id = p_staff_id 
       AND attendance_date BETWEEN v_start_date AND v_end_date;
       
@@ -6485,7 +6376,8 @@ BEGIN
         locked_at = NOW(),
         locked_by = p_locked_by,
         updated_at = NOW()
-    WHERE year = p_year AND month = p_month AND is_locked = false;
+    WHERE year = p_year AND month = p_month AND is_locked = false
+      AND (p_staff_id IS NULL OR staff_id = p_staff_id);
     
     GET DIAGNOSTICS v_count = ROW_COUNT;
     RETURN v_count;
@@ -6533,45 +6425,52 @@ CREATE POLICY "Admin All Access Deltas" ON public.attendance_delta_adjustments F
 CREATE OR REPLACE FUNCTION public.check_payroll_lock_v1()
 RETURNS TRIGGER AS $$
 DECLARE
-    v_locked BOOLEAN;
+    v_date DATE;
     v_year INTEGER;
     v_month INTEGER;
-    v_date DATE;
+    v_staff_id UUID;
+    v_locked BOOLEAN := false;
 BEGIN
-    -- 1) BYPASS FOR SUPER ADMINS
-    -- "Give admins the full power" - bypassing the lock constraint
+    -- 1) Skip for Super Admins
     IF public.get_is_super_admin() THEN
-        IF (TG_OP = 'DELETE') THEN RETURN OLD; ELSE RETURN NEW; END IF;
+        RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
     END IF;
 
-    -- 2) Determine date based on table
+    -- 2) Resolve date and staff_id
     IF TG_TABLE_NAME = 'attendance_records' THEN
         v_date := COALESCE(NEW.attendance_date, OLD.attendance_date);
-    ELSIF TG_TABLE_NAME = 'delay_incidents' THEN
-        v_date := COALESCE(NEW.incident_date, OLD.incident_date);
+        v_staff_id := COALESCE(NEW.staff_id, OLD.staff_id);
+    ELSIF TG_TABLE_NAME = 'attendance_summaries' THEN
+        v_date := COALESCE(NEW.attendance_date, OLD.attendance_date);
+        v_staff_id := COALESCE(NEW.staff_id, OLD.staff_id);
+    ELSIF TG_TABLE_NAME = 'raw_attendance_events' THEN
+        v_date := COALESCE(NEW.event_timestamp, OLD.event_timestamp)::date;
+        v_staff_id := COALESCE(NEW.staff_id, OLD.staff_id);
     ELSIF TG_TABLE_NAME = 'attendance_incidents' THEN
         v_date := COALESCE(NEW.attendance_date, OLD.attendance_date);
+        v_staff_id := COALESCE(NEW.staff_id, OLD.staff_id);
+    ELSIF TG_TABLE_NAME = 'attendance_corrections' THEN
+        v_date := COALESCE(NEW.attendance_date, OLD.attendance_date);
+        v_staff_id := COALESCE(NEW.staff_id, OLD.staff_id);
+    ELSIF TG_TABLE_NAME = 'delay_incidents' THEN
+        v_date := COALESCE(NEW.incident_date, OLD.incident_date);
     END IF;
 
     v_year := EXTRACT(YEAR FROM v_date)::int;
     v_month := EXTRACT(MONTH FROM v_date)::int;
 
-    -- 3) Check if period is locked
-    -- We check if ANY snapshot for this month is locked.
-    -- Usually, locking happens for the whole period.
+    -- 3) Check if period is locked for this specific staff
     SELECT EXISTS (
         SELECT 1 FROM public.attendance_monthly_snapshots
         WHERE year = v_year AND month = v_month AND is_locked = true
+          AND (v_staff_id IS NULL OR staff_id = v_staff_id)
     ) INTO v_locked;
 
     IF v_locked = true THEN
-        RAISE EXCEPTION 'Payroll period %/% is locked. Operational data is immutable for non-admin users.', v_month, v_year;
+        RAISE EXCEPTION 'Payroll period %/% is locked for staff %. Operational data is immutable.', v_month, v_year, v_staff_id;
     END IF;
 
-    IF (TG_OP = 'DELETE') THEN
-        RETURN OLD;
-    END IF;
-    RETURN NEW;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -6589,6 +6488,21 @@ FOR EACH ROW EXECUTE FUNCTION public.check_payroll_lock_v1();
 DROP TRIGGER IF EXISTS trg_lock_attendance_incidents ON public.attendance_incidents;
 CREATE TRIGGER trg_lock_attendance_incidents
 BEFORE INSERT OR UPDATE OR DELETE ON public.attendance_incidents
+FOR EACH ROW EXECUTE FUNCTION public.check_payroll_lock_v1();
+
+DROP TRIGGER IF EXISTS trg_lock_attendance_summaries ON public.attendance_summaries;
+CREATE TRIGGER trg_lock_attendance_summaries
+BEFORE INSERT OR UPDATE OR DELETE ON public.attendance_summaries
+FOR EACH ROW EXECUTE FUNCTION public.check_payroll_lock_v1();
+
+DROP TRIGGER IF EXISTS trg_lock_attendance_corrections ON public.attendance_corrections;
+CREATE TRIGGER trg_lock_attendance_corrections
+BEFORE INSERT OR UPDATE OR DELETE ON public.attendance_corrections
+FOR EACH ROW EXECUTE FUNCTION public.check_payroll_lock_v1();
+
+DROP TRIGGER IF EXISTS trg_lock_raw_events ON public.raw_attendance_events;
+CREATE TRIGGER trg_lock_raw_events
+BEFORE INSERT OR UPDATE OR DELETE ON public.raw_attendance_events
 FOR EACH ROW EXECUTE FUNCTION public.check_payroll_lock_v1();
 
 -- Patch for Device Department Assignment
@@ -7243,3 +7157,596 @@ BEGIN
         );
     END IF;
 END $$;
+
+-- ================================================================
+-- PATCH: verify_day_v1 — Fix Bug 1 (False Absences)
+-- Problem: The previous version inserted ABSENT rows for ALL active
+--   staff with no attendance_record, including staff on approved leave
+--   or on a weekly-off day. This caused the history RPC (which prefers
+--   attendance_records.status before LEAVE / WEEKLY_OFF) to surface
+--   ABSENT instead of the correct status in profiles and reporting.
+-- Fix: The ABSENT-insert step now skips:
+--   (a) Staff with an approved or taken leave_day for p_date.
+--   (b) Staff whose shift group's weekly_off array includes the
+--       day-of-week of p_date (0=Sun…6=Sat, PostgreSQL DOW).
+-- The verify/mark-verified UPDATE is unchanged.
+-- ================================================================
+
+DROP FUNCTION IF EXISTS public.verify_day_v1(DATE, UUID, UUID);
+CREATE OR REPLACE FUNCTION public.verify_day_v1(
+    p_date           DATE,
+    p_verified_by    UUID,
+    p_shift_group_id UUID DEFAULT NULL
+)
+RETURNS VOID AS $$
+DECLARE
+    v_staff_id UUID;
+BEGIN
+    IF NOT public.has_permission('hr_attendance', 'manage_attendance') THEN
+        RAISE EXCEPTION 'Unauthorized: Permission manage_attendance required.';
+    END IF;
+
+    -- Enforcement: Auto-absence verification only applies to historical (completed) days.
+    IF p_date >= CURRENT_DATE THEN
+        RETURN;
+    END IF;
+
+    -- Step 1: Insert ABSENT only for staff who:
+    --   • are active and in scope
+    --   • have NO existing attendance_record for this date
+    --   • have NO raw events in the pipeline for this date
+    --   • have NO computed summary for this date
+    --   • are NOT on an approved/taken leave for this date
+    --   • are NOT on a weekly-off day for their shift
+    --   • NOT a holiday
+    INSERT INTO attendance_records (staff_id, attendance_date, status, notes)
+    SELECT sm.id, p_date, 'ABSENT', 'Auto-generated during verification'
+    FROM staff_master sm
+    LEFT JOIN shift_groups sg ON sg.id = sm.shift_group_id
+    WHERE sm.is_active = true
+      AND (p_shift_group_id IS NULL OR sm.shift_group_id = p_shift_group_id)
+      -- no row yet
+      AND NOT EXISTS (
+          SELECT 1 FROM attendance_records ar
+          WHERE ar.staff_id = sm.id AND ar.attendance_date = p_date
+      )
+      -- no raw events (intelligent check)
+      AND NOT EXISTS (
+          SELECT 1 FROM raw_attendance_events rae
+          WHERE rae.staff_id = sm.id AND rae.event_timestamp::date = p_date
+      )
+      -- no summary yet
+      AND NOT EXISTS (
+          SELECT 1 FROM attendance_summaries asu
+          WHERE asu.staff_id = sm.id AND asu.attendance_date = p_date
+      )
+      -- not a holiday
+      AND NOT EXISTS (
+          SELECT 1 FROM holidays h WHERE h.holiday_date = p_date
+      )
+      -- not on approved / taken leave
+      AND NOT EXISTS (
+          SELECT 1
+          FROM leave_days ld
+          JOIN leave_requests lr ON lr.id = ld.request_id
+          WHERE ld.staff_id = sm.id
+            AND ld.leave_date = p_date
+            AND lr.status IN ('APPROVED', 'TAKEN')
+      )
+      -- not a weekly-off day for their shift
+      AND NOT (
+          sg.weekly_off IS NOT NULL
+          AND EXTRACT(DOW FROM p_date)::int = ANY(sg.weekly_off)
+      )
+    ON CONFLICT (staff_id, attendance_date) DO NOTHING;
+
+    -- Step 2: Mark all in-scope rows as verified
+    UPDATE attendance_records ar
+    SET is_verified = TRUE,
+        verified_by = p_verified_by,
+        updated_at  = NOW()
+    FROM staff_master sm
+    WHERE ar.attendance_date = p_date
+      AND ar.staff_id = sm.id
+      AND (p_shift_group_id IS NULL OR sm.shift_group_id = p_shift_group_id)
+      AND COALESCE(ar.is_verified, false) = false;
+
+    -- Step 3: Trigger re-compute for all impacted staff to sync summaries
+    FOR v_staff_id IN (
+        SELECT sm.id FROM staff_master sm
+        WHERE sm.is_active = true
+          AND (p_shift_group_id IS NULL OR sm.shift_group_id = p_shift_group_id)
+    ) LOOP
+        PERFORM public.compute_attendance_day_v1(v_staff_id, p_date, TRUE);
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+REVOKE ALL ON FUNCTION public.verify_day_v1(DATE, UUID, UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.verify_day_v1(DATE, UUID, UUID) TO authenticated;
+
+-- ================================================================
+-- PATCH: Attendance Workflows (Round 3)
+-- Bug 8: Unify Incidents (delay_incidents <-> attendance_incidents)
+-- Bug 9: Apply Logic (Corrections & Incidents in compute_day)
+-- ================================================================
+
+-- 1. Corrected Incident Creation: Fans out group delays to individuals
+DROP FUNCTION IF EXISTS public.create_delay_incident_v1(DATE, TEXT, UUID[], INTEGER, UUID, TIME, TIME);
+CREATE OR REPLACE FUNCTION public.create_delay_incident_v1(
+    p_incident_date DATE,
+    p_reason TEXT,
+    p_responsible_staff_ids UUID[],
+    p_excuse_minutes INTEGER,
+    p_shift_group_id UUID DEFAULT NULL,
+    p_start_time TIME DEFAULT NULL,
+    p_end_time TIME DEFAULT NULL
+)
+RETURNS UUID AS $$
+DECLARE
+    v_group_id UUID;
+    v_affected_staff_ids UUID[] := '{}';
+    v_staff_id UUID;
+BEGIN
+    IF NOT (public.has_permission('hr_attendance', 'manage_attendance')) THEN
+        RAISE EXCEPTION 'Unauthorized: Permission manage_attendance required.';
+    END IF;
+
+    -- Store Group Record
+    INSERT INTO public.delay_incidents (
+        incident_date, reason, responsible_staff_ids, excuse_minutes, shift_group_id, status
+    )
+    VALUES (p_incident_date, p_reason, p_responsible_staff_ids, p_excuse_minutes, p_shift_group_id, 'PENDING')
+    RETURNING id INTO v_group_id;
+
+    -- Auto-scope impacted staff (late staff)
+    SELECT array_agg(DISTINCT ar.staff_id) INTO v_affected_staff_ids
+    FROM public.attendance_records ar
+    JOIN public.staff_master sm ON sm.id = ar.staff_id
+    JOIN public.shift_groups sg ON sg.id = sm.shift_group_id
+    WHERE ar.attendance_date = p_incident_date
+      AND (p_shift_group_id IS NULL OR sm.shift_group_id = p_shift_group_id)
+      AND ar.punch_in IS NOT NULL
+      AND (
+          (p_start_time IS NOT NULL AND p_end_time IS NOT NULL AND ar.punch_in::time BETWEEN p_start_time AND p_end_time)
+          OR (p_start_time IS NULL AND ar.punch_in::time > (sg.start_time + (sg.grace_in_minutes || ' minutes')::interval))
+      );
+
+    -- 1. Create Individual Incidents for LATE staff
+    IF v_affected_staff_ids IS NOT NULL THEN
+        FOREACH v_staff_id IN ARRAY v_affected_staff_ids LOOP
+            INSERT INTO public.attendance_incidents (staff_id, attendance_date, incident_type, staff_reason, impact_data, status)
+            VALUES (
+                v_staff_id, 
+                p_incident_date, 
+                'LATE', 
+                'Group Delay: ' || p_reason, 
+                jsonb_build_object('excuse_minutes', p_excuse_minutes, 'group_id', v_group_id), 
+                'PENDING'
+            ) ON CONFLICT DO NOTHING;
+        END LOOP;
+    END IF;
+
+    -- 2. Create Individual Incidents for RESPONSIBLE staff (e.g. for reallocating penalty)
+    IF p_responsible_staff_ids IS NOT NULL THEN
+        FOREACH v_staff_id IN ARRAY p_responsible_staff_ids LOOP
+            INSERT INTO public.attendance_incidents (staff_id, attendance_date, incident_type, staff_reason, impact_data, status)
+            VALUES (
+                v_staff_id, 
+                p_incident_date, 
+                'GENERIC_EXCEPTION', -- Or specific type for responsibility
+                'REALLOCATED RESPONSIBILITY: ' || p_reason, 
+                jsonb_build_object('is_responsible', true, 'group_id', v_group_id), 
+                'PENDING'
+            ) ON CONFLICT DO NOTHING;
+        END LOOP;
+    END IF;
+
+    RETURN v_group_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 2. Corrected Group Resolution Logic
+DROP FUNCTION IF EXISTS public.resolve_delay_incident_v1(UUID, TEXT, UUID);
+CREATE OR REPLACE FUNCTION public.resolve_delay_incident_v1(
+    p_incident_id UUID,
+    p_status TEXT,
+    p_approver_id UUID
+)
+RETURNS VOID AS $$
+DECLARE
+    v_rec RECORD;
+    v_di_rec RECORD;
+    v_penalty_rate NUMERIC(12,2) := 0;
+    v_staff_id UUID;
+BEGIN
+    IF NOT public.has_permission('hr_attendance', 'manage_attendance') THEN
+        RAISE EXCEPTION 'Unauthorized: Permission manage_attendance required.';
+    END IF;
+
+    -- Fetch Group Record Data
+    SELECT * INTO v_di_rec FROM public.delay_incidents WHERE id = p_incident_id;
+    IF NOT FOUND THEN RETURN; END IF;
+
+    -- Update Group Status
+    UPDATE public.delay_incidents
+    SET status = p_status, approved_by = p_approver_id, updated_at = NOW()
+    WHERE id = p_incident_id;
+
+    -- Update all linked Individual Incidents
+    UPDATE public.attendance_incidents
+    SET status = CASE WHEN p_status = 'APPROVED' THEN 'APPROVED' ELSE 'REJECTED' END,
+        resolved_by = p_approver_id,
+        resolved_at = NOW(),
+        resolution_reason = 'Group decision',
+        updated_at = NOW()
+    WHERE impact_data->>'group_id' = p_incident_id::text;
+
+    -- NEW: Handle Financial Penalty Reallocation for Responsible Staff
+    IF p_status = 'APPROVED' AND v_di_rec.responsible_staff_ids IS NOT NULL THEN
+        -- Resolve penalty rate for the shift group
+        SELECT penalty_per_minute INTO v_penalty_rate
+        FROM public.shift_groups WHERE id = v_di_rec.shift_group_id;
+
+        IF v_penalty_rate > 0 THEN
+            FOREACH v_staff_id IN ARRAY v_di_rec.responsible_staff_ids LOOP
+                INSERT INTO public.attendance_salary_deductions (
+                    staff_id, incident_id, amount, deduction_type, notes, status
+                ) VALUES (
+                    v_staff_id, 
+                    p_incident_id, 
+                    COALESCE(v_di_rec.excuse_minutes, 0) * v_penalty_rate, 
+                    'DELAY_RESPONSIBILITY',
+                    'Liability reallocated from group delay incident #' || p_incident_id,
+                    'PENDING'
+                );
+            END LOOP;
+        END IF;
+    END IF;
+
+    -- Trigger re-compute for everyone in the group
+    FOR v_rec IN (
+        SELECT staff_id, attendance_date FROM public.attendance_incidents
+        WHERE impact_data->>'group_id' = p_incident_id::text
+    ) LOOP
+        PERFORM public.compute_attendance_day_v1(v_rec.staff_id, v_rec.attendance_date, TRUE);
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 3. Core Compute Update: Apply Corrections & Incidents
+CREATE OR REPLACE FUNCTION public.compute_attendance_day_v1(
+    p_staff_id UUID,
+    p_date DATE,
+    p_force_recompute BOOLEAN DEFAULT FALSE
+)
+RETURNS UUID AS $$
+DECLARE
+    v_summary_id UUID;
+    v_primary_res RECORD;
+    v_final_status TEXT;
+    v_leave_exists BOOLEAN;
+    v_holiday_exists BOOLEAN;
+    v_manual_exists BOOLEAN;
+    v_manual_status TEXT;
+    v_existing_summary RECORD;
+    v_anomalies TEXT[] := '{}';
+    -- Impact hooks
+    v_corr RECORD;
+    v_inc RECORD;
+    v_late_mins INTEGER;
+    v_early_mins INTEGER;
+    v_net_mins INTEGER;
+    v_applied_corr_id UUID := NULL;
+    v_applied_inc_id UUID := NULL;
+    v_has_pending BOOLEAN := FALSE;
+BEGIN
+    -- 0. Check for existing locked summary
+    SELECT * INTO v_existing_summary 
+    FROM public.attendance_summaries 
+    WHERE staff_id = p_staff_id AND attendance_date = p_date;
+
+    IF v_existing_summary.is_locked AND NOT p_force_recompute THEN
+        RETURN v_existing_summary.id;
+    END IF;
+
+    -- 1. Run Stages 1-8 (Primary Resolver)
+    SELECT * INTO v_primary_res FROM public.resolve_primary_attendance_v1(p_staff_id, p_date);
+    v_final_status := v_primary_res.primary_status;
+    v_anomalies := v_primary_res.out_anomaly_flags;
+    v_late_mins := v_primary_res.late_mins;
+    v_early_mins := v_primary_res.early_out_mins;
+    v_net_mins := v_primary_res.worked_net;
+
+    -- 2. Stage 9: Hierarchy Overlay (Manual/Leave/Holiday)
+    SELECT EXISTS (
+        SELECT 1 FROM public.leave_days ld
+        JOIN public.leave_requests lr ON lr.id = ld.request_id
+        WHERE ld.staff_id = p_staff_id AND ld.leave_date = p_date AND lr.status IN ('APPROVED', 'TAKEN')
+    ) INTO v_leave_exists;
+
+    -- Resolve Holiday
+    SELECT EXISTS (SELECT 1 FROM public.holidays WHERE holiday_date = p_date) INTO v_holiday_exists; 
+
+    SELECT status INTO v_manual_status 
+    FROM public.attendance_records 
+    WHERE staff_id = p_staff_id AND attendance_date = p_date AND is_verified = TRUE;
+    
+    v_manual_exists := (v_manual_status IS NOT NULL);
+
+    IF v_manual_exists THEN
+        v_final_status := v_manual_status;
+        v_anomalies := v_anomalies || 'MANUAL_OVERRIDE';
+    ELSIF v_leave_exists THEN
+        v_final_status := 'LEAVE';
+        v_anomalies := v_anomalies || 'LEAVE_OVERLAY';
+    ELSIF v_holiday_exists THEN
+        v_final_status := 'HOLIDAY';
+        v_anomalies := v_anomalies || 'HOLIDAY_OVERLAY';
+    END IF;
+
+    -- NEW: Stage 11: Correction Impact Override
+    SELECT * INTO v_corr FROM public.attendance_corrections 
+    WHERE staff_id = p_staff_id AND attendance_date = p_date AND status = 'APPROVED';
+
+    IF v_corr.id IS NOT NULL THEN
+        v_applied_corr_id := v_corr.id;
+        IF v_corr.proposed_impact ? 'status' THEN
+            v_final_status := v_corr.proposed_impact->>'status';
+        END IF;
+        
+        -- Support overriding specific metrics from correction
+        IF v_corr.proposed_impact ? 'worked_minutes_net' THEN
+            v_net_mins := (v_corr.proposed_impact->>'worked_minutes_net')::integer;
+        END IF;
+        
+        v_anomalies := v_anomalies || 'WORKFLOW_CORRECTION_APPLIED';
+    END IF;
+
+    -- NEW: Stage 12: Incident Impact Override (e.g. Excused Late)
+    SELECT * INTO v_inc FROM public.attendance_incidents 
+    WHERE staff_id = p_staff_id AND attendance_date = p_date AND status = 'APPROVED'
+    ORDER BY created_at DESC LIMIT 1;
+
+    IF v_inc.id IS NOT NULL THEN
+        v_applied_inc_id := v_inc.id;
+        IF v_inc.impact_data ? 'excuse_minutes' THEN
+            v_late_mins := GREATEST(0, v_late_mins - (v_inc.impact_data->>'excuse_minutes')::integer);
+            -- If late is now 0, status might need promotion (check early-out too)
+            IF v_late_mins = 0 AND v_final_status = 'LATE_PRESENT' THEN
+                IF v_early_mins > 0 THEN
+                    v_final_status := 'EARLY_OUT';
+                ELSE
+                    v_final_status := 'PRESENT';
+                END IF;
+            END IF;
+        END IF;
+        v_anomalies := v_anomalies || 'WORKFLOW_INCIDENT_APPLIED';
+    END IF;
+
+    -- Check if any correction is still pending for the badge
+    SELECT EXISTS (
+        SELECT 1 FROM public.attendance_corrections 
+        WHERE staff_id = p_staff_id AND attendance_date = p_date AND status IN ('SUBMITTED', 'MANAGER_REVIEW', 'HR_REVIEW')
+    ) INTO v_has_pending;
+
+    -- 3. Stage 10: Persistence
+    INSERT INTO public.attendance_summaries (
+        staff_id,
+        attendance_date,
+        primary_status,
+        worked_minutes_gross,
+        worked_minutes_net,
+        late_minutes,
+        early_out_minutes,
+        shift_id,
+        assignment_id,
+        anomaly_flags,
+        raw_punch_in,
+        raw_punch_out,
+        applied_correction_id,
+        applied_incident_id,
+        has_pending_correction,
+        compute_metadata
+    ) VALUES (
+        p_staff_id,
+        p_date,
+        v_final_status,
+        v_primary_res.worked_gross,
+        v_net_mins,
+        v_late_mins,
+        v_early_mins,
+        v_primary_res.out_shift_id,
+        v_primary_res.out_assignment_id,
+        v_anomalies,
+        v_primary_res.out_raw_in,
+        v_primary_res.out_raw_out,
+        v_applied_corr_id,
+        v_applied_inc_id,
+        v_has_pending,
+        jsonb_build_object('version', '2.0.0', 'computed_at', NOW(), 'recompute', p_force_recompute)
+    )
+    ON CONFLICT (staff_id, attendance_date) DO UPDATE
+    SET
+        primary_status = EXCLUDED.primary_status,
+        worked_minutes_gross = EXCLUDED.worked_minutes_gross,
+        worked_minutes_net = EXCLUDED.worked_minutes_net,
+        late_minutes = EXCLUDED.late_minutes,
+        early_out_minutes = EXCLUDED.early_out_minutes,
+        shift_id = EXCLUDED.shift_id,
+        assignment_id = EXCLUDED.assignment_id,
+        anomaly_flags = EXCLUDED.anomaly_flags,
+        raw_punch_in = EXCLUDED.raw_punch_in,
+        raw_punch_out = EXCLUDED.raw_punch_out,
+        applied_correction_id = EXCLUDED.applied_correction_id,
+        applied_incident_id = EXCLUDED.applied_incident_id,
+        has_pending_correction = EXCLUDED.has_pending_correction,
+        compute_metadata = EXCLUDED.compute_metadata,
+        updated_at = NOW()
+    RETURNING id INTO v_summary_id;
+
+    RETURN v_summary_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ================================================================
+-- PATCH: Attendance Workflows & Reporting (Round 4)
+-- Bug 10: Clear pending flag consistently
+-- Bug 11: Align report data shapes with UI
+-- Bug 12: Correct leave counting in daily summary
+-- ================================================================
+
+-- 1. Corrected Correction Resolution: Clear pending flag on terminal status
+CREATE OR REPLACE FUNCTION public.resolve_attendance_correction(
+    p_correction_id UUID,
+    p_action TEXT, -- MANAGER_APPROVE / MANAGER_REJECT / HR_APPROVE / HR_REJECT
+    p_reason TEXT
+)
+RETURNS VOID AS $$
+DECLARE
+    v_corr RECORD;
+    v_new_status attendance_correction_state;
+    v_is_hr BOOLEAN;
+    v_is_manager BOOLEAN;
+BEGIN
+    SELECT * INTO v_corr FROM public.attendance_corrections WHERE id = p_correction_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Correction not found.';
+    END IF;
+
+    v_is_hr := public.has_permission('hr_attendance', 'manage_attendance');
+    
+    -- Manager check: HR can resolve anything, otherwise check if auth.uid() is the manager for v_corr.staff_id
+    IF NOT v_is_hr THEN
+        -- Check if current user is the manager for this staff member
+        -- (Assuming manager_id column exists on staff_master as per security audit requirements)
+        SELECT EXISTS (
+            SELECT 1 FROM public.staff_master 
+            WHERE id = v_corr.staff_id AND manager_id = auth.uid()
+        ) INTO v_is_manager;
+
+        IF NOT v_is_manager THEN
+            RAISE EXCEPTION 'Unauthorized: Manager or HR permissions required for resolution.';
+        END IF;
+    END IF;
+
+    CASE p_action
+        WHEN 'MANAGER_APPROVE' THEN
+            v_new_status := 'MANAGER_REVIEW';
+            UPDATE public.attendance_corrections
+            SET status = v_new_status, manager_id = auth.uid(), manager_reason = p_reason, manager_resolved_at = NOW(), updated_at = NOW()
+            WHERE id = p_correction_id;
+
+        WHEN 'MANAGER_REJECT' THEN
+            v_new_status := 'REJECTED';
+            UPDATE public.attendance_corrections
+            SET status = v_new_status, manager_id = auth.uid(), manager_reason = p_reason, manager_resolved_at = NOW(), updated_at = NOW()
+            WHERE id = p_correction_id;
+
+        WHEN 'HR_APPROVE' THEN
+            IF NOT v_is_hr THEN RAISE EXCEPTION 'Unauthorized: HR permissions required.'; END IF;
+            v_new_status := 'APPROVED';
+            UPDATE public.attendance_corrections
+            SET status = v_new_status, hr_id = auth.uid(), hr_reason = p_reason, hr_resolved_at = NOW(), updated_at = NOW()
+            WHERE id = p_correction_id;
+
+        WHEN 'HR_REJECT' THEN
+            IF NOT v_is_hr THEN RAISE EXCEPTION 'Unauthorized: HR permissions required.'; END IF;
+            v_new_status := 'REJECTED';
+            UPDATE public.attendance_corrections
+            SET status = v_new_status, hr_id = auth.uid(), hr_reason = p_reason, hr_resolved_at = NOW(), updated_at = NOW()
+            WHERE id = p_correction_id;
+
+        ELSE
+            RAISE EXCEPTION 'Invalid action: %', p_action;
+    END CASE;
+
+    -- Clear pending flag for terminal statuses (APPROVED / REJECTED)
+    IF v_new_status IN ('APPROVED', 'REJECTED') THEN
+        UPDATE public.attendance_summaries
+        SET has_pending_correction = FALSE
+        WHERE staff_id = v_corr.staff_id AND attendance_date = v_corr.attendance_date;
+    END IF;
+
+    -- Recompute if approved
+    IF v_new_status = 'APPROVED' THEN
+        PERFORM public.compute_attendance_day_v1(v_corr.staff_id, v_corr.attendance_date, TRUE);
+    END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 2. Corrected Daily Summary: Align field names and fix leave count
+DROP FUNCTION IF EXISTS public.get_daily_muster_summary_v1(DATE) CASCADE;
+DROP FUNCTION IF EXISTS get_daily_muster_summary_v1(DATE) CASCADE;
+CREATE OR REPLACE FUNCTION public.get_daily_muster_summary_v1(
+    p_date DATE
+)
+RETURNS TABLE (
+    total_staff BIGINT,
+    present_count BIGINT,
+    absent_count BIGINT,
+    leave_count BIGINT,
+    miss_punch BIGINT,
+    late_count BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH staff_on_leave AS (
+        SELECT DISTINCT ld.staff_id
+        FROM public.leave_days ld
+        JOIN public.leave_requests lr ON lr.id = ld.request_id
+        WHERE ld.leave_date = p_date AND lr.status IN ('APPROVED', 'TAKEN')
+    )
+    SELECT
+        COUNT(sm.id),
+        COUNT(asum.id) FILTER (WHERE asum.primary_status IN ('PRESENT', 'LATE_PRESENT', 'EARLY_OUT')),
+        COUNT(sm.id) FILTER (WHERE asum.primary_status = 'ABSENT' AND sol.staff_id IS NULL),
+        COUNT(sol.staff_id),
+        COUNT(asum.id) FILTER (WHERE asum.primary_status = 'MISS_PUNCH'),
+        COUNT(asum.id) FILTER (
+            WHERE asum.late_minutes > 0
+        )
+    FROM public.staff_master sm
+    LEFT JOIN LATERAL public.get_effective_shift(sm.id, p_date) es ON TRUE
+    LEFT JOIN public.attendance_summaries asum ON asum.staff_id = sm.id AND asum.attendance_date = p_date
+    LEFT JOIN staff_on_leave sol ON sol.staff_id = sm.id
+    WHERE sm.is_active = true;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 3. Corrected Late Report: Return row-level data for UI table
+DROP FUNCTION IF EXISTS public.get_late_report_v1(DATE, DATE);
+CREATE OR REPLACE FUNCTION public.get_late_report_v1(
+    p_start_date DATE,
+    p_end_date DATE
+)
+RETURNS TABLE (
+    staff_id UUID,
+    full_name TEXT,
+    staff_code TEXT,
+    attendance_date DATE,
+    late_minutes INTEGER
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sm.id,
+        sm.full_name::text,
+        sm.staff_code::text,
+        asum.attendance_date,
+        asum.late_minutes
+    FROM public.staff_master sm
+    JOIN public.attendance_summaries asum ON asum.staff_id = sm.id
+    LEFT JOIN LATERAL public.get_effective_shift(sm.id, asum.attendance_date) es ON TRUE
+    WHERE asum.attendance_date BETWEEN p_start_date AND p_end_date
+      AND asum.late_minutes > 0
+    ORDER BY asum.attendance_date DESC, sm.full_name ASC;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ================================================================
+-- PATCH: Attendance Metrics & Save Logic (Round 5)
+-- Bug 13: missing metric field in records
+-- ================================================================
+
+ALTER TABLE public.attendance_records ADD COLUMN IF NOT EXISTS excused_early_out_minutes INTEGER DEFAULT 0;

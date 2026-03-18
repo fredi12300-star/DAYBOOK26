@@ -42,3 +42,35 @@ export function formatISOToLocalTime(isoString: string | null): string {
     const minutes = String(date.getMinutes()).padStart(2, '0');
     return `${hours}:${minutes}`;
 }
+
+/**
+ * Returns today's date in YYYY-MM-DD format respecting the local timezone.
+ */
+export function getLocalTodayISO(): string {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+/**
+ * Returns the local start and end of a given month in YYYY-MM-DD format.
+ */
+export function getMonthRangeLocal(year: number, month: number): { start: string; end: string } {
+    const start = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    const end = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    return { start, end };
+}
+/**
+ * Returns yesterday's date in YYYY-MM-DD format respecting the local timezone.
+ */
+export function getYesterdayISO(): string {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}

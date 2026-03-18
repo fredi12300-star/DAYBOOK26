@@ -1,15 +1,11 @@
 import { useState, useEffect } from 'react';
 import {
     Calendar as CalendarIcon,
-    Clock,
-    AlertCircle,
-    ChevronLeft,
-    ChevronRight,
-    Search
+    Clock, AlertCircle, ChevronLeft, ChevronRight, Search
 } from 'lucide-react';
-import { AttendanceRecord, StaffMaster } from '../../../types/accounting';
+import { StaffMaster, AttendanceRecord, ShiftGroup } from '../../../types/accounting';
 import { fetchStaffAttendanceHistory, fetchShiftGroups } from '../../../lib/supabase';
-import { ShiftGroup } from '../../../types/accounting';
+import { getMonthRangeLocal } from '../../../lib/attendanceUtils';
 
 interface StaffAttendanceProps {
     staff: StaffMaster;
@@ -21,12 +17,15 @@ export default function StaffAttendance({ staff }: StaffAttendanceProps) {
     const [isLoading, setIsLoading] = useState(true);
     const [currentMonth, setCurrentMonth] = useState(new Date());
 
+    const parseLocalDate = (dateStr: string) => {
+        // Appends midnight in local time to avoid UTC shift
+        return new Date(dateStr + 'T00:00:00');
+    };
     useEffect(() => {
         const loadHistory = async () => {
             setIsLoading(true);
             try {
-                const start = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1).toISOString().split('T')[0];
-                const end = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0).toISOString().split('T')[0];
+                const { start, end } = getMonthRangeLocal(currentMonth.getFullYear(), currentMonth.getMonth());
                 const [data, groups] = await Promise.all([
                     fetchStaffAttendanceHistory(staff.id, start, end),
                     fetchShiftGroups()
@@ -159,8 +158,16 @@ export default function StaffAttendance({ staff }: StaffAttendanceProps) {
                         </h3>
                     </div>
                     <button
-                        onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1))}
-                        className="p-2 bg-slate-800 rounded-xl border border-slate-700 hover:bg-slate-700 transition-colors"
+                        onClick={() => {
+                            const nextMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1);
+                            const today = new Date();
+                            // Only allow navigation if the next month is not strictly after current month
+                            if (nextMonth <= new Date(today.getFullYear(), today.getMonth(), 1)) {
+                                setCurrentMonth(nextMonth);
+                            }
+                        }}
+                        disabled={new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1) > new Date()}
+                        className={`p-2 bg-slate-800 rounded-xl border border-slate-700 hover:bg-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                     >
                         <ChevronRight size={16} />
                     </button>
@@ -224,10 +231,10 @@ export default function StaffAttendance({ staff }: StaffAttendanceProps) {
                                 <div className="flex items-center gap-4">
                                     <div className="text-center min-w-[40px]">
                                         <p className="text-[10px] font-black text-slate-500 uppercase">
-                                            {new Date(record.attendance_date).toLocaleString('default', { weekday: 'short' })}
+                                            {parseLocalDate(record.attendance_date).toLocaleString('default', { weekday: 'short' })}
                                         </p>
                                         <p className="text-lg font-black text-white">
-                                            {new Date(record.attendance_date).getDate()}
+                                            {parseLocalDate(record.attendance_date).getDate()}
                                         </p>
                                     </div>
                                     <div className="h-8 w-px bg-slate-800" />

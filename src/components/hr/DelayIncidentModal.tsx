@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { StaffMaster, ShiftGroup, AttendanceIncidentType } from '../../types/accounting';
 import {
-    requestAttendanceIncidentRPC, fetchStaffMasters, fetchShiftGroups
+    createDelayIncidentRPC, fetchStaffMasters, fetchShiftGroups
 } from '../../lib/supabase';
 
 interface Props {
@@ -58,32 +58,16 @@ export default function DelayIncidentModal({ isOpen, onClose, onSuccess, current
 
         try {
             setIsSaving(true);
-
-            // For now, if multiple staff are selected, we create separate incidents
-            // or we handle the "Branch Delay" by creating one and letting the pipeline resolve
-            // however the new RPC expects p_staff_id. 
-            // If responsible_staff_ids is empty, it might be a general branch delay?
-            // The new deterministic pipeline needs a staff_id.
-
-            // Logic: Create one incident for EACH responsible staff? 
-            // Wait, the "Delay Incident" in the previous context was about excusing OTHER staff.
-
-            // For the syntax fix, let's map it to the new RPC.
-            // If the user selects "Responsible Staff", it means THEY caused the delay.
-
-            for (const staffId of incidentData.responsible_staff_ids) {
-                await requestAttendanceIncidentRPC({
-                    p_staff_id: staffId,
-                    p_date: currentDate,
-                    p_type: incidentData.incident_type,
-                    p_reason: incidentData.reason,
-                    p_impact_request: {
-                        excuse_minutes: incidentData.excuse_minutes,
-                        start_time: incidentData.p_start_time,
-                        end_time: incidentData.p_end_time
-                    }
-                });
-            }
+            
+            await createDelayIncidentRPC({
+                p_incident_date: currentDate,
+                p_reason: incidentData.reason,
+                p_responsible_staff_ids: incidentData.responsible_staff_ids,
+                p_excuse_minutes: incidentData.excuse_minutes,
+                p_shift_group_id: incidentData.shift_group_id,
+                p_start_time: incidentData.p_start_time,
+                p_end_time: incidentData.p_end_time
+            });
 
             onSuccess();
             onClose();

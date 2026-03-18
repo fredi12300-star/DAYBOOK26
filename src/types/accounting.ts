@@ -459,6 +459,9 @@ export interface ShiftGroup {
     min_hours_present: number;
     min_hours_half_day: number;
     boundary_start_time: string;
+    weekly_off: number[];
+    penalty_per_minute: number;
+    max_monthly_penalty_pct: number;
     is_active: boolean;
     created_at?: string;
     updated_at?: string;
