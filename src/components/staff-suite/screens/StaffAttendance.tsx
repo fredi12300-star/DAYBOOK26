@@ -43,9 +43,14 @@ export default function StaffAttendance({ staff }: StaffAttendanceProps) {
         loadHistory();
     }, [staff.id, currentMonth]);
 
-    const formatTime = (isoString: string | null) => {
-        if (!isoString) return '--:--';
-        return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const formatTime = (timeString: string | null, attendanceDate: string) => {
+        if (!timeString) return '--:--';
+        if (timeString.includes('T')) {
+            const d = new Date(timeString);
+            return !isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true }) : timeString;
+        }
+        const d = new Date(`${attendanceDate}T${timeString}Z`);
+        return !isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true }) : timeString;
     };
 
     const getStatusColor = (status: string) => {
@@ -242,18 +247,18 @@ export default function StaffAttendance({ staff }: StaffAttendanceProps) {
                                                 <span className="flex items-center gap-1 w-[45px] text-slate-500 uppercase tracking-widest text-[8px]">
                                                     <Clock size={10} className="text-emerald-400" /> Shift
                                                 </span>
-                                                <span className="text-white bg-slate-800/50 px-2 py-0.5 rounded">{formatTime(record.punch_in)}</span>
+                                                <span className="text-white bg-slate-800/50 px-2 py-0.5 rounded">{formatTime(record.punch_in, record.attendance_date)}</span>
                                                 <span className="text-slate-600">-</span>
-                                                <span className="text-white bg-slate-800/50 px-2 py-0.5 rounded">{formatTime(record.punch_out)}</span>
+                                                <span className="text-white bg-slate-800/50 px-2 py-0.5 rounded">{formatTime(record.punch_out, record.attendance_date)}</span>
                                             </div>
                                             {(record.lunch_out || record.lunch_in) && (
                                                 <div className="flex items-center gap-3 text-[10px] font-bold text-slate-400">
                                                     <span className="flex items-center gap-1 w-[45px] text-slate-500 uppercase tracking-widest text-[8px]">
                                                         <Clock size={10} className="text-amber-400" /> Break
                                                     </span>
-                                                    <span className="text-rose-300 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">{formatTime(record.lunch_out)}</span>
+                                                    <span className="text-rose-300 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">{formatTime(record.lunch_out, record.attendance_date)}</span>
                                                     <span className="text-slate-600">-</span>
-                                                    <span className="text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">{formatTime(record.lunch_in)}</span>
+                                                    <span className="text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">{formatTime(record.lunch_in, record.attendance_date)}</span>
                                                 </div>
                                             )}
                                         </div>
